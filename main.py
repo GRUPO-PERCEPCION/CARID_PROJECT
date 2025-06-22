@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import uvicorn
 from loguru import logger
@@ -30,7 +31,7 @@ if settings.log_file:
 
 # Importar después de configurar logging
 from models.model_manager import model_manager
-from api.routes import health
+from api.routes import health, detection
 
 
 @asynccontextmanager
@@ -95,6 +96,15 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("🛑 Cerrando CARID ALPR API...")
+
+    # Limpiar archivos temporales en shutdown
+    try:
+        from services.file_service import file_service
+        file_service.cleanup_old_files(0)
+        logger.info("🗑️ Archivos temporales limpiados")
+    except Exception as e:
+        logger.warning(f"⚠️ Error limpiando archivos temporales: {str(e)}")
+
     logger.info("✅ API cerrada exitosamente")
 
 
@@ -106,17 +116,29 @@ app = FastAPI(
 
     Sistema avanzado de detección y reconocimiento de placas vehiculares usando YOLOv8.
 
-    ### Características:
-    - 🎯 **Detección precisa** de placas vehiculares
-    - 📖 **Reconocimiento de caracteres** con alta precisión
-    - ⚡ **Procesamiento optimizado** con GPU CUDA
-    - 🔧 **API REST** completa y documentada
+    ### 🎯 Características Principales:
+    - **Detección precisa** de placas vehiculares con YOLOv8
+    - **Reconocimiento de caracteres** con alta precisión
+    - **Validación de formato** para placas peruanas
+    - **Procesamiento optimizado** con GPU CUDA
+    - **API REST completa** y documentada
 
-    ### Tecnologías:
-    - **YOLOv8** para detección
-    - **PyTorch** con soporte CUDA
+    ### 🔧 Tecnologías:
+    - **YOLOv8** para detección y reconocimiento
+    - **PyTorch** con soporte CUDA 11.8
     - **FastAPI** para la API REST
     - **OpenCV** para procesamiento de imágenes
+
+    ### 📋 Endpoints Principales:
+    - `POST /api/v1/detect/image` - Detección completa en imágenes
+    - `POST /api/v1/detect/image/quick` - Detección rápida
+    - `GET /api/v1/health` - Health checks
+    - `GET /docs` - Esta documentación
+
+    ### 🚀 Etapa Actual: 2 - Procesamiento de Imágenes
+    ✅ Detección y reconocimiento completo  
+    ✅ Validación de formatos peruanos  
+    ✅ Visualizaciones y resultados estructurados
     """,
     version=settings.app_version,
     docs_url="/docs",
@@ -124,7 +146,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configurar CORS (abierto para desarrollo)
+# Configurar CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # En producción, especificar dominios exactos
@@ -133,34 +155,130 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Montar archivos estáticos
+try:
+    app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
+    logger.info(f"📁 Archivos estáticos montados en: /static -> {settings.static_dir}")
+except Exception as e:
+    logger.warning(f"⚠️ No se pudieron montar archivos estáticos: {str(e)}")
+
 # Incluir rutas
 app.include_router(health.router)
+app.include_router(detection.router)
+
+logger.info("🛣️ Rutas registradas:")
+logger.info("   📊 Health: /api/v1/health/*")
+logger.info("   🔍 Detection: /api/v1/detect/*")
 
 
-# Endpoint raíz
+# Endpoint raíz mejorado
 @app.get("/", tags=["Root"])
 async def root():
-    """Endpoint raíz de la API"""
+    """Endpoint raíz de la API con información completa"""
+
+    # Obtener estado de los modelos
+    try:
+        models_status = model_manager.get_model_info() if model_manager.is_loaded else {"models_loaded": False}
+    except:
+        models_status = {"models_loaded": False}
+
     return {
         "message": "🚗 CARID - Sistema ALPR",
         "version": settings.app_version,
         "status": "running",
-        "docs": "/docs",
-        "health": "/api/v1/health"
+        "etapa_actual": "2 - Procesamiento de Imágenes",
+        "funcionalidades": {
+            "deteccion_placas": "✅ Disponible",
+            "reconocimiento_caracteres": "✅ Disponible",
+            "validacion_formato": "✅ Disponible",
+            "procesamiento_videos": "⏳ Próximamente",
+            "streaming_tiempo_real": "⏳ Próximamente"
+        },
+        "modelos": {
+            "cargados": models_status.get("models_loaded", False),
+            "dispositivo": models_status.get("device", "unknown"),
+            "detector_placas": models_status.get("plate_detector_loaded", False),
+            "reconocedor_caracteres": models_status.get("char_recognizer_loaded", False)
+        },
+        "endpoints": {
+            "deteccion_imagen": "/api/v1/detect/image",
+            "deteccion_rapida": "/api/v1/detect/image/quick",
+            "health_check": "/api/v1/health",
+            "documentacion": "/docs",
+            "estadisticas": "/api/v1/detect/stats"
+        },
+        "configuracion": {
+            "max_file_size_mb": settings.max_file_size,
+            "formatos_soportados": settings.allowed_extensions_list,
+            "cuda_disponible": models_status.get("cuda_available", False)
+        }
     }
 
 
-# Manejador de errores global
+# Endpoint de información del sistema
+@app.get("/system", tags=["System"])
+async def system_info():
+    """Información detallada del sistema"""
+    try:
+        from api.dependencies import get_system_info
+        return get_system_info()
+    except Exception as e:
+        logger.error(f"❌ Error obteniendo info del sistema: {str(e)}")
+        return {"error": "No se pudo obtener información del sistema"}
+
+
+# Manejador de errores global mejorado
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    logger.error(f"Error global: {str(exc)}")
+    logger.error(f"❌ Error global en {request.url}: {str(exc)}")
+
+    # Información adicional en modo debug
+    error_detail = str(exc) if settings.debug else "Error interno del servidor"
+
     return {
-        "error": "Error interno del servidor",
-        "detail": str(exc) if settings.debug else "Contacte al administrador"
+        "success": False,
+        "error": {
+            "type": "InternalServerError",
+            "message": "Error interno del servidor",
+            "detail": error_detail
+        },
+        "endpoint": str(request.url.path),
+        "method": request.method,
+        "timestamp": str(__import__('datetime').datetime.utcnow().isoformat()),
+        "help": "Contacte al administrador si el problema persiste"
+    }
+
+
+# Manejador específico para errores HTTP
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc: HTTPException):
+    logger.warning(f"⚠️ Error HTTP {exc.status_code} en {request.url}: {exc.detail}")
+
+    return {
+        "success": False,
+        "error": {
+            "type": "HTTPException",
+            "message": exc.detail,
+            "status_code": exc.status_code
+        },
+        "endpoint": str(request.url.path),
+        "method": request.method,
+        "timestamp": str(__import__('datetime').datetime.utcnow().isoformat())
     }
 
 
 if __name__ == "__main__":
+    # Mensaje de inicio
+    logger.info("🚗 CARID ALPR - Etapa 2: Procesamiento de Imágenes")
+    logger.info("=" * 60)
+    logger.info("🎯 Funcionalidades disponibles:")
+    logger.info("   ✅ Detección de placas vehiculares")
+    logger.info("   ✅ Reconocimiento de caracteres")
+    logger.info("   ✅ Validación de formatos peruanos")
+    logger.info("   ✅ API REST completa")
+    logger.info("   ✅ Documentación interactiva")
+    logger.info("=" * 60)
+
     # Ejecutar servidor
     logger.info("🚀 Iniciando servidor uvicorn...")
 
