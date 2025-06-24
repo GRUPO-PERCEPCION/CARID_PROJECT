@@ -21,9 +21,10 @@ from services.file_service import file_service
 from core.utils import PerformanceTimer
 
 
+# 🔧 DEFINIR PLACETRACKER BÁSICO SIEMPRE
 @dataclass
 class PlateTracker:
-    """Clase para trackear placas detectadas y evitar duplicados"""
+    """Clase básica para trackear placas detectadas y evitar duplicados"""
     plate_text: str
     best_confidence: float
     best_frame: int
@@ -44,17 +45,6 @@ class PlateTracker:
         if confidence > self.best_confidence:
             self.best_confidence = confidence
             self.best_frame = frame_num
-
-    def get_average_bbox(self) -> List[float]:
-        """Calcula el bbox promedio de todas las detecciones"""
-        if not self.bbox_history:
-            return [0, 0, 0, 0]
-
-        avg_bbox = [
-            sum(bbox[i] for bbox in self.bbox_history) / len(self.bbox_history)
-            for i in range(4)
-        ]
-        return avg_bbox
 
     def is_similar_position(self, new_bbox: List[float], threshold: float = 0.3) -> bool:
         """Verifica si una nueva detección está en posición similar"""
@@ -88,21 +78,38 @@ class PlateTracker:
         return intersection / union if union > 0 else 0.0
 
 
+# 🚀 INTENTAR CARGAR TRACKING AVANZADO
+try:
+    from .advanced_tracking import (
+        PlateDetection,
+        AdvancedPlateTracker,
+        AdvancedTrackingManager
+    )
+
+    USE_ADVANCED_TRACKING = True
+    logger.info("✅ Sistema de tracking avanzado cargado")
+except ImportError:
+    logger.warning("⚠️ Tracker avanzado no encontrado, usando sistema básico")
+    USE_ADVANCED_TRACKING = False
+
+
 class VideoService:
-    """Servicio para procesamiento de videos con reconocimiento inteligente"""
+    """Servicio para procesamiento de videos con tracking inteligente"""
 
     def __init__(self):
         self.model_manager = model_manager
         self.file_service = file_service
 
         # Configuración de procesamiento
-        self.frame_skip = 3  # Procesar cada N frames para optimizar
-        self.similarity_threshold = 0.7  # Umbral para considerar placas similares
-        self.min_detection_frames = 2  # Mínimo frames para confirmar una placa
-        self.max_tracking_distance = 5  # Máximo frames sin ver la placa
+        self.frame_skip = getattr(settings, 'video_frame_skip', 3)
+        self.similarity_threshold = getattr(settings, 'video_similarity_threshold', 0.7)
+        self.min_detection_frames = getattr(settings, 'video_min_detection_frames', 2)
+        self.max_tracking_distance = getattr(settings, 'video_max_tracking_distance', 5)
 
         # Thread pool para procesamiento paralelo
         self.executor = ThreadPoolExecutor(max_workers=2)
+
+        logger.info(f"🎬 VideoService inicializado. Tracking avanzado: {'✅' if USE_ADVANCED_TRACKING else '❌'}")
 
     async def process_video(
             self,
@@ -112,14 +119,6 @@ class VideoService:
     ) -> Dict[str, Any]:
         """
         Procesa un video completo con reconocimiento inteligente de placas
-
-        Args:
-            video_path: Ruta del video
-            file_info: Información del archivo
-            request_params: Parámetros de la solicitud
-
-        Returns:
-            Resultado completo del procesamiento
         """
         start_time = time.time()
         result_id = self.file_service.create_result_id()
@@ -127,7 +126,7 @@ class VideoService:
         try:
             logger.info(f"🎬 Iniciando procesamiento de video: {file_info['filename']}")
 
-            # Verificar modelos
+            # Verificar que los modelos estén cargados
             if not self.model_manager.is_loaded:
                 raise Exception("Los modelos no están cargados")
 
@@ -141,7 +140,7 @@ class VideoService:
                         f"{video_info['fps']:.1f} FPS")
 
             # Verificar duración máxima
-            max_duration = request_params.get('max_duration', settings.max_video_duration)
+            max_duration = request_params.get('max_duration', getattr(settings, 'max_video_duration', 300))
             if video_info['duration'] > max_duration:
                 raise Exception(f"Video muy largo. Máximo: {max_duration}s, "
                                 f"recibido: {video_info['duration']:.1f}s")
@@ -149,14 +148,12 @@ class VideoService:
             # Configurar parámetros de procesamiento
             self.frame_skip = request_params.get('frame_skip', self.frame_skip)
 
-            # Procesar video frame por frame
+            # 🔧 SIEMPRE USAR TRACKING BÁSICO POR AHORA
             with PerformanceTimer("Procesamiento de video"):
-                tracking_result = await self._process_video_with_tracking(
+                tracking_result = await self._process_video_with_basic_tracking(
                     video_path, video_info, request_params
                 )
-
-            # Filtrar y validar placas únicas
-            unique_plates = self._extract_unique_plates(tracking_result['trackers'])
+                unique_plates = self._extract_unique_plates_basic(tracking_result['trackers'])
 
             # Guardar resultados si se solicita
             result_urls = {}
@@ -167,14 +164,6 @@ class VideoService:
                         video_path, result_id, "original"
                     )
                     result_urls["original"] = self.file_service.get_file_url(original_path)
-
-                    # Crear video con anotaciones si se solicita
-                    if request_params.get('create_annotated_video', False):
-                        annotated_path = await self._create_annotated_video(
-                            video_path, tracking_result['frame_results'], result_id
-                        )
-                        if annotated_path:
-                            result_urls["annotated"] = self.file_service.get_file_url(annotated_path)
 
                     # Guardar frames con mejores detecciones
                     if request_params.get('save_best_frames', True):
@@ -200,13 +189,14 @@ class VideoService:
                     "frames_with_detections": tracking_result['frames_with_detections'],
                     "total_detections": tracking_result['total_detections'],
                     "unique_plates_found": len(unique_plates),
-                    "valid_plates": len([p for p in unique_plates if p['is_valid_format']])
+                    "valid_plates": len([p for p in unique_plates if self._get_is_valid(p)])
                 },
                 "unique_plates": unique_plates,
                 "best_plate": unique_plates[0] if unique_plates else None,
                 "processing_time": round(processing_time, 3),
                 "timestamp": time.time(),
-                "result_urls": result_urls if result_urls else None
+                "result_urls": result_urls if result_urls else None,
+                "tracking_type": "basic"
             }
 
             # Limpiar archivo temporal
@@ -241,7 +231,8 @@ class VideoService:
                 "best_plate": None,
                 "processing_time": round(processing_time, 3),
                 "timestamp": time.time(),
-                "result_urls": None
+                "result_urls": None,
+                "tracking_type": "error"
             }
 
     def _get_video_info(self, video_path: str) -> Optional[Dict[str, Any]]:
@@ -265,22 +256,22 @@ class VideoService:
                 "width": width,
                 "height": height,
                 "duration": duration,
-                "frames_to_process": frame_count // self.frame_skip
+                "frames_to_process": frame_count // self.frame_skip,
+                "file_size_mb": self.file_service.get_file_size_mb(video_path)
             }
 
         except Exception as e:
             logger.error(f"❌ Error obteniendo info del video: {str(e)}")
             return None
 
-    async def _process_video_with_tracking(
+    async def _process_video_with_basic_tracking(
             self,
             video_path: str,
             video_info: Dict[str, Any],
             request_params: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Procesa video frame por frame con tracking de placas"""
+        """Procesa video con tracking básico pero efectivo"""
 
-        # Diccionario para trackear placas por texto
         plate_trackers: Dict[str, PlateTracker] = {}
         frame_results = []
 
@@ -288,15 +279,12 @@ class VideoService:
         frames_with_detections = 0
         total_detections = 0
 
-        # Configurar parámetros del modelo
-        model_kwargs = {
-            'conf': request_params.get('confidence_threshold', 0.4),  # Más permisivo para videos
-            'iou': request_params.get('iou_threshold', 0.4),
-            'verbose': False
-        }
-
         cap = cv2.VideoCapture(video_path)
         frame_num = 0
+
+        # 🔧 CONFIGURAR PARÁMETROS PARA EL MODELO (SIN USAR EXECUTOR)
+        confidence_threshold = request_params.get('confidence_threshold', 0.4)
+        iou_threshold = request_params.get('iou_threshold', 0.4)
 
         try:
             while True:
@@ -310,9 +298,9 @@ class VideoService:
                         # Convertir frame a RGB
                         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                        # Procesar frame con el pipeline completo
-                        frame_result = await self._process_single_frame(
-                            frame_rgb, frame_num, model_kwargs
+                        # 🔧 PROCESAR FRAME DIRECTAMENTE (SIN EXECUTOR)
+                        frame_result = self._process_single_frame_sync(
+                            frame_rgb, frame_num, confidence_threshold, iou_threshold
                         )
 
                         frames_processed += 1
@@ -322,7 +310,7 @@ class VideoService:
                             total_detections += len(frame_result['detections'])
 
                             # Actualizar trackers con nuevas detecciones
-                            self._update_trackers(
+                            self._update_trackers_basic(
                                 plate_trackers,
                                 frame_result['detections'],
                                 frame_num
@@ -356,33 +344,37 @@ class VideoService:
             "total_detections": total_detections
         }
 
-    async def _process_single_frame(
+    def _process_single_frame_sync(
             self,
             frame: np.ndarray,
             frame_num: int,
-            model_kwargs: Dict[str, Any]
+            confidence_threshold: float,
+            iou_threshold: float
     ) -> Dict[str, Any]:
-        """Procesa un frame individual"""
+        """
+        🔧 VERSIÓN SÍNCRONA - Procesa un frame individual sin executor
+        """
         try:
-            # Ejecutar pipeline en thread separado para no bloquear
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                self.executor,
-                self.model_manager.process_full_pipeline,
+            # Procesar directamente con el modelo manager
+            result = self.model_manager.process_full_pipeline(
                 frame,
-                **model_kwargs
+                conf=confidence_threshold,
+                iou=iou_threshold,
+                verbose=False
             )
 
             # Extraer detecciones válidas
             detections = []
             if result.get("success") and result.get("final_results"):
                 for plate_result in result["final_results"]:
-                    if plate_result["plate_text"]:  # Solo placas con texto
+                    if plate_result["plate_text"]:
                         detection = {
                             "plate_text": plate_result["plate_text"],
                             "confidence": plate_result["overall_confidence"],
-                            "bbox": plate_result["plate_bbox"],
-                            "is_valid_format": plate_result["is_valid_plate"],
+                            "plate_bbox": plate_result["plate_bbox"],
+                            "plate_confidence": plate_result["plate_confidence"],
+                            "char_confidence": plate_result.get("character_recognition", {}).get("confidence", 0.0),
+                            "is_valid_plate": plate_result["is_valid_plate"],
                             "frame_num": frame_num
                         }
                         detections.append(detection)
@@ -402,18 +394,17 @@ class VideoService:
                 "error": str(e)
             }
 
-    def _update_trackers(
+    def _update_trackers_basic(
             self,
             trackers: Dict[str, PlateTracker],
             detections: List[Dict[str, Any]],
             frame_num: int
     ):
-        """Actualiza los trackers con nuevas detecciones"""
-
+        """Actualiza trackers básicos con nuevas detecciones"""
         for detection in detections:
             plate_text = detection["plate_text"]
             confidence = detection["confidence"]
-            bbox = detection["bbox"]
+            bbox = detection["plate_bbox"]
 
             # Buscar tracker existente para esta placa
             existing_tracker = None
@@ -432,17 +423,10 @@ class VideoService:
             if existing_tracker:
                 # Actualizar tracker existente
                 existing_tracker.update(confidence, frame_num, bbox)
-
-                # Si encontramos una versión mejor del texto, actualizar
-                if confidence > existing_tracker.best_confidence:
-                    # Mover tracker a la nueva clave si el texto cambió
-                    if plate_text != existing_tracker.plate_text:
-                        del trackers[existing_tracker.plate_text]
-                        existing_tracker.plate_text = plate_text
-                        trackers[plate_text] = existing_tracker
+                logger.debug(f"✅ Placa actualizada: {plate_text} (Frame: {frame_num})")
             else:
                 # Crear nuevo tracker
-                new_tracker = PlateTracker(
+                trackers[plate_text] = PlateTracker(
                     plate_text=plate_text,
                     best_confidence=confidence,
                     best_frame=frame_num,
@@ -450,11 +434,11 @@ class VideoService:
                     first_seen=frame_num,
                     last_seen=frame_num
                 )
-                new_tracker.update(confidence, frame_num, bbox)
-                trackers[plate_text] = new_tracker
+                trackers[plate_text].update(confidence, frame_num, bbox)
+                logger.debug(f"🆕 Nueva placa detectada: {plate_text} (Frame: {frame_num})")
 
     def _are_plates_similar(self, text1: str, text2: str, threshold: float = 0.8) -> bool:
-        """Verifica si dos textos de placa son similares (para manejar errores OCR)"""
+        """Verifica si dos textos de placa son similares"""
         if not text1 or not text2:
             return False
 
@@ -465,7 +449,7 @@ class VideoService:
         if text1 == text2:
             return True
 
-        # Calcular similitud usando distancia de Levenshtein simplificada
+        # Calcular similitud usando caracteres
         if len(text1) != len(text2):
             return False
 
@@ -474,39 +458,37 @@ class VideoService:
 
         return similarity >= threshold
 
-    def _extract_unique_plates(self, trackers: Dict[str, PlateTracker]) -> List[Dict[str, Any]]:
-        """Extrae placas únicas finales con filtrado y validación"""
+    def _extract_unique_plates_basic(self, trackers: Dict[str, PlateTracker]) -> List[Dict[str, Any]]:
+        """Extrae placas únicas del tracking básico"""
         unique_plates = []
 
         for plate_text, tracker in trackers.items():
-            # Filtrar trackers con pocas detecciones (posibles falsos positivos)
-            if tracker.detection_count < self.min_detection_frames:
-                logger.debug(f"🔍 Placa '{plate_text}' descartada: pocas detecciones ({tracker.detection_count})")
-                continue
+            # Filtrar trackers con pocas detecciones
+            if tracker.detection_count >= self.min_detection_frames:
+                avg_confidence = sum(tracker.confidences) / len(tracker.confidences) if tracker.confidences else 0.0
+                stability_score = 1.0 - (np.std(tracker.confidences) / np.mean(tracker.confidences)) if len(
+                    tracker.confidences) > 1 and np.mean(tracker.confidences) > 0 else 0.5
 
-            # Crear resultado final para esta placa
-            plate_result = {
-                "plate_text": tracker.plate_text,
-                "best_confidence": tracker.best_confidence,
-                "average_confidence": sum(tracker.confidences) / len(tracker.confidences),
-                "detection_count": tracker.detection_count,
-                "first_seen_frame": tracker.first_seen,
-                "last_seen_frame": tracker.last_seen,
-                "best_frame": tracker.best_frame,
-                "duration_frames": tracker.last_seen - tracker.first_seen + 1,
-                "average_bbox": tracker.get_average_bbox(),
-                "is_valid_format": self._validate_plate_format(tracker.plate_text),
-                "stability_score": self._calculate_stability_score(tracker)
-            }
+                plate_result = {
+                    "plate_text": tracker.plate_text,
+                    "best_confidence": tracker.best_confidence,
+                    "detection_count": tracker.detection_count,
+                    "first_seen_frame": tracker.first_seen,
+                    "last_seen_frame": tracker.last_seen,
+                    "best_frame": tracker.best_frame,  # Solo el número, no dict
+                    "is_valid_format": self._validate_plate_format(tracker.plate_text),
+                    "avg_confidence": round(avg_confidence, 3),
+                    "stability_score": round(stability_score, 3),
+                    "duration_frames": tracker.last_seen - tracker.first_seen + 1
+                }
+                unique_plates.append(plate_result)
 
-            unique_plates.append(plate_result)
+                logger.info(f"📋 Placa confirmada: '{tracker.plate_text}' "
+                            f"(Detecciones: {tracker.detection_count}, "
+                            f"Confianza: {tracker.best_confidence:.3f})")
 
-        # Ordenar por confianza y estabilidad
-        unique_plates.sort(
-            key=lambda x: (x["best_confidence"] * 0.7 + x["stability_score"] * 0.3),
-            reverse=True
-        )
-
+        # Ordenar por confianza
+        unique_plates.sort(key=lambda x: x["best_confidence"], reverse=True)
         return unique_plates
 
     def _validate_plate_format(self, plate_text: str) -> bool:
@@ -516,33 +498,24 @@ class VideoService:
             r'^[A-Z]{3}-\d{3}$',  # ABC-123
             r'^[A-Z]{2}-\d{4}$',  # AB-1234
             r'^[A-Z]\d{2}-\d{3}$',  # A12-345
+            r'^[A-Z]{3}\d{3}$',  # ABC123 (sin guión)
         ]
+        return any(re.match(pattern, plate_text) for pattern in patterns)
 
-        for pattern in patterns:
-            if re.match(pattern, plate_text):
-                return True
-        return False
-
-    def _calculate_stability_score(self, tracker: PlateTracker) -> float:
-        """Calcula score de estabilidad basado en consistencia de detecciones"""
-        if not tracker.confidences:
-            return 0.0
-
-        # Factores de estabilidad
-        confidence_consistency = 1.0 - (np.std(tracker.confidences) / np.mean(tracker.confidences))
-        detection_frequency = min(tracker.detection_count / 10.0, 1.0)  # Normalizar a máximo 10
-
-        return (confidence_consistency * 0.6 + detection_frequency * 0.4)
+    def _get_is_valid(self, plate: Dict[str, Any]) -> bool:
+        """Obtiene validez de placa según el tipo de resultado"""
+        return plate.get("is_valid_format", False)
 
     def _generate_video_result_message(
             self,
             unique_plates: List[Dict[str, Any]],
             tracking_result: Dict[str, Any]
     ) -> str:
-        """Genera mensaje descriptivo del resultado del video"""
+        """Genera mensaje descriptivo del resultado"""
         if not unique_plates:
             return f"No se detectaron placas válidas en el video. " \
-                   f"Frames procesados: {tracking_result['frames_processed']}"
+                   f"Frames procesados: {tracking_result['frames_processed']}, " \
+                   f"detecciones totales: {tracking_result['total_detections']}"
 
         valid_plates = [p for p in unique_plates if p['is_valid_format']]
         best_plate = unique_plates[0]
@@ -562,7 +535,7 @@ class VideoService:
             unique_plates: List[Dict[str, Any]],
             result_id: str
     ) -> Dict[str, str]:
-        """Guarda los frames con las mejores detecciones"""
+        """Guarda los frames con mejores detecciones"""
         frame_urls = {}
 
         try:
@@ -570,8 +543,11 @@ class VideoService:
 
             for i, plate in enumerate(unique_plates[:5]):  # Máximo 5 mejores placas
                 try:
+                    # best_frame es solo el número
+                    best_frame_num = plate.get('best_frame', 0)
+
                     # Ir al frame con mejor detección
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, plate['best_frame'])
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, best_frame_num)
                     ret, frame = cap.read()
 
                     if ret:
@@ -587,6 +563,8 @@ class VideoService:
 
                         frame_urls[f"best_frame_{i + 1}"] = self.file_service.get_file_url(frame_path)
 
+                        logger.info(f"💾 Frame guardado: {plate['plate_text']} (Frame: {best_frame_num})")
+
                 except Exception as e:
                     logger.warning(f"⚠️ Error guardando frame para placa {plate['plate_text']}: {str(e)}")
 
@@ -596,17 +574,6 @@ class VideoService:
             logger.warning(f"⚠️ Error guardando frames: {str(e)}")
 
         return frame_urls
-
-    async def _create_annotated_video(
-            self,
-            video_path: str,
-            frame_results: List[Dict[str, Any]],
-            result_id: str
-    ) -> Optional[str]:
-        """Crea video anotado con detecciones (implementación futura)"""
-        # TODO: Implementar creación de video anotado
-        logger.info("📹 Creación de video anotado pendiente de implementación")
-        return None
 
 
 # Instancia global del servicio

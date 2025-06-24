@@ -39,6 +39,26 @@ class FileService:
         for directory in [self.upload_dir, self.temp_dir, self.static_dir, self.results_dir]:
             directory.mkdir(parents=True, exist_ok=True)
 
+    # 🔧 MÉTODO CORREGIDO - AGREGADO
+    def get_file_size_mb(self, file_path: str) -> float:
+        """
+        Obtiene el tamaño del archivo en MB
+
+        Args:
+            file_path: Ruta del archivo
+
+        Returns:
+            Tamaño en MB
+        """
+        try:
+            if os.path.exists(file_path):
+                size_bytes = os.path.getsize(file_path)
+                return round(size_bytes / (1024 * 1024), 2)
+            return 0.0
+        except Exception as e:
+            logger.warning(f"⚠️ Error obteniendo tamaño de archivo {file_path}: {str(e)}")
+            return 0.0
+
     async def save_upload_file(self, upload_file: UploadFile, prefix: str = "") -> Tuple[str, Dict[str, Any]]:
         """
         Guarda un archivo subido y retorna información del mismo
@@ -80,9 +100,9 @@ class FileService:
                 content = await upload_file.read()
                 await f.write(content)
 
-            # Validar tamaño
-            file_size_mb = get_file_size_mb(str(file_path))
-            if not validate_file_size(str(file_path)):
+            # Validar tamaño usando el método de la clase
+            file_size_mb = self.get_file_size_mb(str(file_path))
+            if file_size_mb > settings.max_file_size:
                 # Eliminar archivo si es muy grande
                 os.remove(file_path)
                 raise HTTPException(
@@ -139,7 +159,7 @@ class FileService:
                 "original_filename": upload_file.filename,
                 "content_type": upload_file.content_type or f"{'image' if file_extension in settings.image_extensions_list else 'video'}/unknown",
                 "size_bytes": os.path.getsize(file_path),
-                "size_mb": round(file_size_mb, 2),
+                "size_mb": file_size_mb,
                 "dimensions": dimensions,
                 "file_type": "image" if file_extension in settings.image_extensions_list else "video"
             }

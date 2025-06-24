@@ -13,7 +13,7 @@ class Settings(BaseSettings):
         env_file=".env",
         case_sensitive=False,
         extra="allow",
-        protected_namespaces=('settings_',)  # Solución para warnings
+        protected_namespaces=('settings_',)
     )
 
     # Configuración de la aplicación
@@ -34,30 +34,70 @@ class Settings(BaseSettings):
     gpu_device: int = Field(default=0, env="GPU_DEVICE")
     model_device: str = Field(default="cuda:0", env="MODEL_DEVICE")
 
-    # Configuración de archivos
+    # 🚀 CONFIGURACIÓN DE ARCHIVOS ACTUALIZADA - 150MB
     upload_dir: str = Field(default="./uploads", env="UPLOAD_DIR")
     static_dir: str = Field(default="./static", env="STATIC_DIR")
-    max_file_size: int = Field(default=50, env="MAX_FILE_SIZE")  # MB
+    max_file_size: int = Field(default=150, env="MAX_FILE_SIZE")  # ✅ AUMENTADO A 150MB
     allowed_extensions: str = Field(default="jpg,jpeg,png,mp4,avi,mov,mkv,webm", env="ALLOWED_EXTENSIONS")
 
     # Configuración de procesamiento de imágenes
-    image_max_size: int = Field(default=1920, env="IMAGE_MAX_SIZE")  # píxeles
+    image_max_size: int = Field(default=1920, env="IMAGE_MAX_SIZE")
 
-    # Configuración de procesamiento de videos - NUEVO
-    max_video_duration: int = Field(default=300, env="MAX_VIDEO_DURATION")  # segundos (5 minutos)
-    video_frame_skip: int = Field(default=3, env="VIDEO_FRAME_SKIP")  # procesar cada N frames
-    video_min_detection_frames: int = Field(default=2, env="VIDEO_MIN_DETECTION_FRAMES")  # mínimo frames para confirmar
-    video_similarity_threshold: float = Field(default=0.7, env="VIDEO_SIMILARITY_THRESHOLD")  # umbral similitud placas
-    video_max_tracking_distance: int = Field(default=5,
-                                             env="VIDEO_MAX_TRACKING_DISTANCE")  # máximo frames sin ver placa
-    video_processing_timeout: int = Field(default=600, env="VIDEO_PROCESSING_TIMEOUT")  # timeout en segundos (10 min)
+    # 🎬 CONFIGURACIÓN DE VIDEOS OPTIMIZADA
+    max_video_duration: int = Field(default=600, env="MAX_VIDEO_DURATION")  # ✅ 10 minutos para videos grandes
+    video_frame_skip: int = Field(default=3, env="VIDEO_FRAME_SKIP")
+    video_min_detection_frames: int = Field(default=3, env="VIDEO_MIN_DETECTION_FRAMES")  # ✅ Más restrictivo
+    video_similarity_threshold: float = Field(default=0.8, env="VIDEO_SIMILARITY_THRESHOLD")  # ✅ Más estricto
+    video_max_tracking_distance: int = Field(default=8, env="VIDEO_MAX_TRACKING_DISTANCE")  # ✅ Mayor distancia
+    video_processing_timeout: int = Field(default=1200, env="VIDEO_PROCESSING_TIMEOUT")  # ✅ 20 min timeout
 
-    # Configuración de procesamiento general
-    frame_skip: int = Field(default=1, env="FRAME_SKIP")  # Para compatibilidad
+    # 🔧 NUEVAS CONFIGURACIONES PARA TRACKING AVANZADO
+    plate_confidence_weight: float = Field(default=0.4, env="PLATE_CONFIDENCE_WEIGHT")  # Peso detector placas
+    char_confidence_weight: float = Field(default=0.6, env="CHAR_CONFIDENCE_WEIGHT")  # Peso reconocedor caracteres
+    min_combined_confidence: float = Field(default=0.3, env="MIN_COMBINED_CONFIDENCE")  # Confianza mínima combinada
+    tracking_iou_threshold: float = Field(default=0.2, env="TRACKING_IOU_THRESHOLD")  # IoU para tracking
+    stability_frames_required: int = Field(default=5, env="STABILITY_FRAMES_REQUIRED")  # Frames para estabilidad
 
     # Logging
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
     log_file: str = Field(default="./logs/api.log", env="LOG_FILE")
+
+    # ✅ MÉTODOS ACTUALIZADOS PARA TRACKING AVANZADO
+
+    def get_video_processing_config(self) -> dict:
+        """Retorna configuración optimizada para procesamiento de video"""
+        return {
+            "max_duration": self.max_video_duration,
+            "frame_skip": self.video_frame_skip,
+            "min_detection_frames": self.video_min_detection_frames,
+            "similarity_threshold": self.video_similarity_threshold,
+            "max_tracking_distance": self.video_max_tracking_distance,
+            "processing_timeout": self.video_processing_timeout,
+            "confidence_threshold": max(0.25, self.model_confidence_threshold - 0.15),  # Más permisivo
+            "iou_threshold": self.model_iou_threshold,
+            "supported_formats": self.video_extensions_list,
+            # 🆕 Nuevas configuraciones de tracking
+            "plate_confidence_weight": self.plate_confidence_weight,
+            "char_confidence_weight": self.char_confidence_weight,
+            "min_combined_confidence": self.min_combined_confidence,
+            "tracking_iou_threshold": self.tracking_iou_threshold,
+            "stability_frames_required": self.stability_frames_required
+        }
+
+    def get_tracking_config(self) -> dict:
+        """Configuración específica para tracking de placas"""
+        return {
+            "similarity_threshold": self.video_similarity_threshold,
+            "min_detection_frames": self.video_min_detection_frames,
+            "max_tracking_distance": self.video_max_tracking_distance,
+            "iou_threshold": self.tracking_iou_threshold,
+            "stability_frames_required": self.stability_frames_required,
+            "confidence_weights": {
+                "plate_detection": self.plate_confidence_weight,
+                "character_recognition": self.char_confidence_weight
+            },
+            "min_combined_confidence": self.min_combined_confidence
+        }
 
     @property
     def allowed_extensions_list(self) -> List[str]:

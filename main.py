@@ -8,6 +8,10 @@ import sys
 import os
 
 from starlette.responses import JSONResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 # Configurar logging
 from config.settings import settings
@@ -34,7 +38,37 @@ if settings.log_file:
 # Importar después de configurar logging
 from models.model_manager import model_manager
 from api.routes import health, detection
-from api.routes.video import video_router  # Nueva importación
+from api.routes.video import video_router
+
+
+# 🔧 MIDDLEWARE PERSONALIZADO PARA ARCHIVOS GRANDES
+class LargeFileMiddleware(BaseHTTPMiddleware):
+    """Middleware para manejar archivos grandes"""
+
+    async def dispatch(self, request: Request, call_next):
+        # Verificar tamaño del contenido
+        content_length = request.headers.get("content-length")
+
+        if content_length:
+            content_length = int(content_length)
+            max_size = settings.max_file_size * 1024 * 1024  # Convertir MB a bytes
+
+            if content_length > max_size:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "success": False,
+                        "error": {
+                            "type": "PayloadTooLarge",
+                            "message": f"Archivo muy grande. Tamaño máximo: {settings.max_file_size}MB, recibido: {content_length / (1024 * 1024):.1f}MB",
+                            "max_size_mb": settings.max_file_size,
+                            "received_size_mb": round(content_length / (1024 * 1024), 1)
+                        }
+                    }
+                )
+
+        response = await call_next(request)
+        return response
 
 
 @asynccontextmanager
@@ -90,6 +124,7 @@ async def lifespan(app: FastAPI):
         logger.success("✅ CARID ALPR API iniciada exitosamente")
         logger.info(f"🌐 API disponible en: http://{settings.host}:{settings.port}")
         logger.info(f"📚 Documentación disponible en: http://{settings.host}:{settings.port}/docs")
+        logger.info(f"📂 Tamaño máximo de archivos: {settings.max_file_size}MB")  # ✅ NUEVO LOG
 
     except Exception as e:
         logger.error(f"❌ Error durante startup: {str(e)}")
@@ -122,10 +157,11 @@ app = FastAPI(
     ### 🎯 Características Principales:
     - **Detección precisa** de placas vehiculares con YOLOv8
     - **Reconocimiento de caracteres** con alta precisión
-    - **Procesamiento de videos** con tracking inteligente
+    - **Procesamiento de videos** con tracking inteligente avanzado
     - **Validación de formato** para placas peruanas
     - **Procesamiento optimizado** con GPU CUDA
     - **API REST completa** y documentada
+    - **✅ Soporte para archivos hasta 150MB**
 
     ### 🔧 Tecnologías:
     - **YOLOv8** para detección y reconocimiento
@@ -136,18 +172,26 @@ app = FastAPI(
     ### 📋 Endpoints Principales:
     - `POST /api/v1/detect/image` - Detección completa en imágenes
     - `POST /api/v1/detect/image/quick` - Detección rápida en imágenes
-    - `POST /api/v1/video/detect` - **NUEVO:** Detección en videos con tracking
-    - `POST /api/v1/video/detect/quick` - **NUEVO:** Detección rápida en videos
+    - `POST /api/v1/video/detect` - **MEJORADO:** Detección en videos con tracking avanzado
+    - `POST /api/v1/video/detect/quick` - **MEJORADO:** Detección rápida en videos
     - `GET /api/v1/health` - Health checks
     - `GET /docs` - Esta documentación
 
-    ### 🚀 Etapa Actual: 3 - Procesamiento de Videos
+    ### 🚀 Etapa Actual: 3+ - Tracking Avanzado de Videos
     ✅ Detección y reconocimiento en imágenes  
     ✅ Validación de formatos peruanos  
-    ✅ **NUEVO:** Procesamiento de videos frame por frame  
-    ✅ **NUEVO:** Tracking inteligente de placas  
-    ✅ **NUEVO:** Eliminación de duplicados  
-    ✅ **NUEVO:** Selección de mejores detecciones
+    ✅ Procesamiento de videos frame por frame  
+    ✅ **NUEVO:** Tracking inteligente con doble confianza  
+    ✅ **NUEVO:** Sistema anti-duplicación avanzado  
+    ✅ **NUEVO:** Selección de mejores detecciones por estabilidad
+    ✅ **NUEVO:** Soporte para archivos hasta 150MB
+
+    ### 📊 Mejoras en Tracking:
+    - **Doble Confianza**: Maneja independientemente la confianza del detector de placas y del reconocedor de caracteres
+    - **Tracking Estable**: Requiere múltiples detecciones consistentes antes de confirmar una placa
+    - **Anti-Duplicación**: Evita reconocer la misma placa múltiples veces en el mismo vehículo
+    - **Calidad Temporal**: Evalúa la estabilidad de las detecciones a lo largo del tiempo
+    - **Archivos Grandes**: Procesa videos de hasta 150MB y 10 minutos de duración
     """,
     version=settings.app_version,
     docs_url="/docs",
@@ -155,14 +199,23 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configurar CORS
+# 🔧 CONFIGURAR MIDDLEWARES PARA ARCHIVOS GRANDES
+
+# 1. Middleware personalizado para archivos grandes
+app.add_middleware(LargeFileMiddleware)
+
+# 2. CORS con configuración extendida
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # En producción, especificar dominios exactos
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    max_age=3600,  # Cache preflight por 1 hora
 )
+
+# 3. Trusted Host (opcional para producción)
+# app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1"])
 
 # Montar archivos estáticos
 try:
@@ -171,18 +224,23 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ No se pudieron montar archivos estáticos: {str(e)}")
 
+# Importar después de configurar logging
+from models.model_manager import model_manager
+from api.routes import health, detection
+from api.routes.video import video_router
+
 # Incluir rutas
 app.include_router(health.router)
 app.include_router(detection.router)
-app.include_router(video_router)  # Nueva ruta de video
+app.include_router(video_router)
 
 logger.info("🛣️ Rutas registradas:")
 logger.info("   📊 Health: /api/v1/health/*")
 logger.info("   🔍 Detection: /api/v1/detect/*")
-logger.info("   🎬 Video: /api/v1/video/*")  # Nueva ruta
+logger.info("   🎬 Video: /api/v1/video/*")
 
 
-# Endpoint raíz mejorado
+# Endpoint raíz actualizado
 @app.get("/", tags=["Root"])
 async def root():
     """Endpoint raíz de la API con información completa"""
@@ -197,14 +255,15 @@ async def root():
         "message": "🚗 CARID - Sistema ALPR",
         "version": settings.app_version,
         "status": "running",
-        "etapa_actual": "3 - Procesamiento de Videos",
+        "etapa_actual": "3+ - Tracking Avanzado con Doble Confianza",
         "funcionalidades": {
             "deteccion_placas_imagenes": "✅ Disponible",
             "reconocimiento_caracteres": "✅ Disponible",
             "validacion_formato": "✅ Disponible",
-            "procesamiento_videos": "✅ **NUEVO** Disponible",
-            "tracking_inteligente": "✅ **NUEVO** Disponible",
-            "eliminacion_duplicados": "✅ **NUEVO** Disponible",
+            "procesamiento_videos": "✅ Disponible",
+            "tracking_avanzado": "✅ **NUEVO** Doble confianza + estabilidad",
+            "anti_duplicacion": "✅ **MEJORADO** Sistema inteligente",
+            "archivos_grandes": "✅ **NUEVO** Hasta 150MB",
             "streaming_tiempo_real": "⏳ Próximamente"
         },
         "modelos": {
@@ -224,25 +283,26 @@ async def root():
             "estadisticas": "/api/v1/detect/stats"
         },
         "configuracion": {
-            "max_file_size_mb": settings.max_file_size,
+            "max_file_size_mb": settings.max_file_size,  # ✅ ACTUALIZADO A 150MB
             "formatos_imagenes": ["jpg", "jpeg", "png"],
-            "formatos_videos": ["mp4", "avi", "mov", "mkv", "webm"],  # NUEVO
-            "max_video_duration": settings.max_video_duration,  # NUEVO
+            "formatos_videos": ["mp4", "avi", "mov", "mkv", "webm"],
+            "max_video_duration": settings.max_video_duration,  # ✅ 10 minutos
             "cuda_disponible": models_status.get("cuda_available", False)
         },
-        "novedades_etapa_3": {
-            "procesamiento_videos": "Frame por frame con optimización",
-            "tracking_placas": "Evita duplicados automáticamente",
-            "deteccion_unica": "Una placa por vehículo",
-            "mejor_confianza": "Selecciona automáticamente la mejor detección",
-            "formatos_soportados": "MP4, AVI, MOV, MKV, WebM",
-            "duracion_maxima": "5 minutos por video",
-            "procesamiento_paralelo": "Optimizado con AsyncIO"
+        "novedades_tracking_avanzado": {
+            "doble_confianza": "Maneja independientemente detector y reconocedor",
+            "estabilidad_temporal": "Requiere múltiples detecciones consistentes",
+            "anti_duplicacion_inteligente": "Evita re-detectar la misma placa",
+            "calidad_tracking": "Evalúa excellent/good/fair/poor",
+            "archivos_grandes": "Hasta 150MB y 10 minutos",
+            "pesos_configurables": "Detector 40% + Reconocedor 60%",
+            "iou_tracking": "Seguimiento espacial mejorado",
+            "limpieza_automatica": "Trackers inactivos se archivan automáticamente"
         }
     }
 
 
-# Endpoint de información del sistema
+# Endpoint de información del sistema (sin cambios)
 @app.get("/system", tags=["System"])
 async def system_info():
     """Información detallada del sistema"""
@@ -254,7 +314,7 @@ async def system_info():
         return {"error": "No se pudo obtener información del sistema"}
 
 
-# Manejador de errores global mejorado
+# Manejadores de errores mejorados
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     logger.error(f"❌ Error global en {request.url}: {str(exc)}")
@@ -279,7 +339,6 @@ async def global_exception_handler(request, exc):
     )
 
 
-# Manejador específico para errores HTTP
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc: HTTPException):
     logger.warning(f"⚠️ Error HTTP {exc.status_code} en {request.url}: {exc.detail}")
@@ -301,28 +360,31 @@ async def http_exception_handler(request, exc: HTTPException):
 
 
 if __name__ == "__main__":
-    # Mensaje de inicio
-    logger.info("🚗 CARID ALPR - Etapa 3: Procesamiento de Videos")
-    logger.info("=" * 60)
+    # Mensaje de inicio actualizado
+    logger.info("🚗 CARID ALPR - Etapa 3+: Tracking Avanzado con Doble Confianza")
+    logger.info("=" * 70)
     logger.info("🎯 Funcionalidades disponibles:")
     logger.info("   ✅ Detección de placas en imágenes")
     logger.info("   ✅ Reconocimiento de caracteres")
     logger.info("   ✅ Validación de formatos peruanos")
     logger.info("   ✅ Procesamiento de videos")
-    logger.info("   ✅ Tracking inteligente de placas")
-    logger.info("   ✅ Eliminación automática de duplicados")
-    logger.info("   ✅ Selección de mejores detecciones")
+    logger.info("   ✅ Tracking inteligente con doble confianza")
+    logger.info("   ✅ Sistema anti-duplicación avanzado")
+    logger.info("   ✅ Evaluación de estabilidad temporal")
+    logger.info("   ✅ Soporte para archivos grandes (150MB)")
     logger.info("   ✅ API REST completa")
     logger.info("   ✅ Documentación interactiva")
-    logger.info("=" * 60)
-    logger.info("🎬 Formatos de video soportados:")
-    logger.info("   📹 MP4, AVI, MOV, MKV, WebM")
-    logger.info("   ⏱️ Duración máxima: 5 minutos")
-    logger.info("   🚀 Procesamiento optimizado frame por frame")
-    logger.info("=" * 60)
+    logger.info("=" * 70)
+    logger.info("🎬 Capacidades de video mejoradas:")
+    logger.info("   📹 MP4, AVI, MOV, MKV, WebM hasta 150MB")
+    logger.info("   ⏱️ Duración máxima: 10 minutos")
+    logger.info("   🎯 Doble confianza: Detector + Reconocedor")
+    logger.info("   🔄 Tracking estable con múltiples validaciones")
+    logger.info("   🚀 Procesamiento optimizado y paralelo")
+    logger.info("=" * 70)
 
-    # Ejecutar servidor
-    logger.info("🚀 Iniciando servidor uvicorn...")
+    # Ejecutar servidor con configuración para archivos grandes
+    logger.info("🚀 Iniciando servidor uvicorn con soporte para archivos grandes...")
 
     uvicorn.run(
         "main:app",
@@ -330,5 +392,9 @@ if __name__ == "__main__":
         port=settings.port,
         reload=settings.debug,
         log_level=settings.log_level.lower(),
-        access_log=True
+        access_log=True,
+        # 🔧 CONFIGURACIONES PARA ARCHIVOS GRANDES
+        timeout_keep_alive=30,  # Mantener conexiones por más tiempo
+        limit_max_requests=1000,  # Máximo requests por worker
+        backlog=2048  # Backlog de conexiones
     )

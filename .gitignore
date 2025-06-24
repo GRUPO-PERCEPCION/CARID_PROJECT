@@ -201,5 +201,7 @@ cython_debug/
 .idea/vcs.xml
 
 .idea
+./static
 
-.env.example
+/static
+/static/results
