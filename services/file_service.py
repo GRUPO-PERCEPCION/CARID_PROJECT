@@ -18,7 +18,7 @@ from core.utils import (
     generate_unique_filename,
     get_image_dimensions,
     is_valid_image,
-    resize_image_if_needed
+    resize_image_if_needed, is_valid_video, get_video_info
 )
 
 
@@ -91,28 +91,57 @@ class FileService:
                            f"archivo recibido: {file_size_mb:.1f}MB"
                 )
 
-            # Validar que sea una imagen válida
-            if not is_valid_image(str(file_path)):
+            # CORRECCIÓN: Determinar tipo de archivo y validar según corresponda
+            file_extension = Path(upload_file.filename).suffix[1:].lower()
+
+            # Validar según el tipo de archivo
+            if file_extension in settings.image_extensions_list:
+                # Es una imagen, validar como imagen
+                if not is_valid_image(str(file_path)):
+                    os.remove(file_path)
+                    raise HTTPException(
+                        status_code=400,
+                        detail="El archivo no es una imagen válida o está corrupto"
+                    )
+
+                # Obtener dimensiones de imagen
+                dimensions = get_image_dimensions(str(file_path))
+
+                # Redimensionar si es necesario
+                resize_image_if_needed(str(file_path))
+
+            elif file_extension in settings.video_extensions_list:
+                # Es un video, validar como video
+                if not is_valid_video(str(file_path)):
+                    os.remove(file_path)
+                    raise HTTPException(
+                        status_code=400,
+                        detail="El archivo no es un video válido o está corrupto"
+                    )
+
+                # Obtener información del video
+                video_info = get_video_info(str(file_path))
+                if video_info:
+                    dimensions = {"width": video_info["width"], "height": video_info["height"]}
+                else:
+                    dimensions = None
+            else:
+                # Tipo de archivo no reconocido
                 os.remove(file_path)
                 raise HTTPException(
                     status_code=400,
-                    detail="El archivo no es una imagen válida o está corrupto"
+                    detail=f"Tipo de archivo no soportado: {file_extension}"
                 )
-
-            # Obtener dimensiones
-            dimensions = get_image_dimensions(str(file_path))
-
-            # Redimensionar si es necesario
-            resize_image_if_needed(str(file_path))
 
             # Crear información del archivo
             file_info = {
                 "filename": unique_filename,
                 "original_filename": upload_file.filename,
-                "content_type": upload_file.content_type or "image/unknown",
+                "content_type": upload_file.content_type or f"{'image' if file_extension in settings.image_extensions_list else 'video'}/unknown",
                 "size_bytes": os.path.getsize(file_path),
                 "size_mb": round(file_size_mb, 2),
-                "dimensions": {"width": dimensions[0], "height": dimensions[1]} if dimensions else None
+                "dimensions": dimensions,
+                "file_type": "image" if file_extension in settings.image_extensions_list else "video"
             }
 
             logger.success(f"✅ Archivo guardado: {unique_filename} ({file_info['size_mb']}MB)")

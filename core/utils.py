@@ -163,6 +163,291 @@ def get_video_info(video_path: str) -> Optional[dict]:
         return None
 
 
+def get_video_frame_at_time(video_path: str, time_seconds: float) -> Optional[np.ndarray]:
+    """
+    Extrae un frame específico del video en un tiempo dado
+
+    Args:
+        video_path: Ruta del video
+        time_seconds: Tiempo en segundos donde extraer el frame
+
+    Returns:
+        Frame como numpy array en formato RGB o None si hay error
+    """
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return None
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_number = int(time_seconds * fps)
+
+        # Ir al frame específico
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        ret, frame = cap.read()
+
+        cap.release()
+
+        if ret:
+            # Convertir de BGR a RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            return frame_rgb
+
+        return None
+
+    except Exception as e:
+        logger.error(f"Error extrayendo frame en tiempo {time_seconds}s: {str(e)}")
+        return None
+
+
+def extract_video_frames(video_path: str, frame_skip: int = 1, max_frames: int = None) -> List[np.ndarray]:
+    """
+    Extrae frames de un video
+
+    Args:
+        video_path: Ruta del video
+        frame_skip: Extraer cada N frames
+        max_frames: Máximo número de frames a extraer
+
+    Returns:
+        Lista de frames como numpy arrays en formato RGB
+    """
+    frames = []
+
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return frames
+
+        frame_num = 0
+        extracted_count = 0
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Procesar solo cada N frames
+            if frame_num % frame_skip == 0:
+                # Convertir de BGR a RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frames.append(frame_rgb)
+                extracted_count += 1
+
+                # Verificar límite máximo
+                if max_frames and extracted_count >= max_frames:
+                    break
+
+            frame_num += 1
+
+        cap.release()
+        logger.info(f"Extraídos {len(frames)} frames del video")
+
+    except Exception as e:
+        logger.error(f"Error extrayendo frames: {str(e)}")
+
+    return frames
+
+
+def save_frame_as_image(frame: np.ndarray, output_path: str, quality: int = 95) -> bool:
+    """
+    Guarda un frame como imagen
+
+    Args:
+        frame: Frame en formato RGB
+        output_path: Ruta donde guardar la imagen
+        quality: Calidad de compresión JPEG (1-100)
+
+    Returns:
+        True si se guardó exitosamente, False en caso contrario
+    """
+    try:
+        # Convertir de RGB a BGR para OpenCV
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        # Guardar imagen
+        success = cv2.imwrite(output_path, frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+
+        if success:
+            logger.info(f"Frame guardado como imagen: {output_path}")
+
+        return success
+
+    except Exception as e:
+        logger.error(f"Error guardando frame como imagen: {str(e)}")
+        return False
+
+
+def validate_video_duration(video_path: str, max_duration_seconds: int) -> bool:
+    """
+    Valida que la duración del video no exceda el límite
+
+    Args:
+        video_path: Ruta del video
+        max_duration_seconds: Duración máxima permitida en segundos
+
+    Returns:
+        True si la duración es válida, False en caso contrario
+    """
+    try:
+        video_info = get_video_info(video_path)
+        if not video_info:
+            return False
+
+        return video_info["duration_seconds"] <= max_duration_seconds
+
+    except Exception as e:
+        logger.error(f"Error validando duración del video: {str(e)}")
+        return False
+
+
+def get_video_codec_info(video_path: str) -> Optional[dict]:
+    """
+    Obtiene información del codec del video
+
+    Args:
+        video_path: Ruta del video
+
+    Returns:
+        Diccionario con información del codec o None si hay error
+    """
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return None
+
+        # Obtener código del codec
+        fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+        codec = chr(fourcc & 0xFF) + chr((fourcc >> 8) & 0xFF) + \
+                chr((fourcc >> 16) & 0xFF) + chr((fourcc >> 24) & 0xFF)
+
+        # Información adicional
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        cap.release()
+
+        return {
+            "codec": codec,
+            "fourcc": fourcc,
+            "fps": fps,
+            "frame_count": frame_count,
+            "resolution": f"{width}x{height}",
+            "aspect_ratio": round(width / height, 2) if height > 0 else 0
+        }
+
+    except Exception as e:
+        logger.error(f"Error obteniendo información del codec: {str(e)}")
+        return None
+
+
+def estimate_processing_time(video_info: dict, frame_skip: int = 3) -> dict:
+    """
+    Estima el tiempo de procesamiento para un video
+
+    Args:
+        video_info: Información del video obtenida con get_video_info()
+        frame_skip: Número de frames a saltar
+
+    Returns:
+        Diccionario con estimaciones de tiempo
+    """
+    try:
+        if not video_info:
+            return {"error": "Información de video inválida"}
+
+        total_frames = video_info["frame_count"]
+        frames_to_process = total_frames // frame_skip
+        duration_seconds = video_info["duration_seconds"]
+
+        # Estimaciones basadas en benchmarks (ajustar según hardware)
+        # Tiempo base por frame procesado (en segundos)
+        base_time_per_frame = 0.1  # 100ms por frame en promedio
+
+        # Factores de ajuste
+        resolution_factor = 1.0
+        if video_info["width"] > 1920:  # 4K+
+            resolution_factor = 2.0
+        elif video_info["width"] > 1280:  # HD+
+            resolution_factor = 1.5
+
+        # Cálculo de tiempo estimado
+        estimated_seconds = frames_to_process * base_time_per_frame * resolution_factor
+
+        return {
+            "total_frames": total_frames,
+            "frames_to_process": frames_to_process,
+            "estimated_processing_time_seconds": round(estimated_seconds, 1),
+            "estimated_processing_time_minutes": round(estimated_seconds / 60, 1),
+            "processing_speed_ratio": round(duration_seconds / estimated_seconds, 1),
+            "resolution_factor": resolution_factor,
+            "recommendation": _get_processing_recommendation(estimated_seconds, duration_seconds)
+        }
+
+    except Exception as e:
+        logger.error(f"Error estimando tiempo de procesamiento: {str(e)}")
+        return {"error": str(e)}
+
+
+def _get_processing_recommendation(estimated_time: float, video_duration: float) -> str:
+    """Genera recomendación basada en tiempo estimado"""
+    ratio = estimated_time / video_duration
+
+    if ratio < 0.5:
+        return "Procesamiento muy rápido - óptimo"
+    elif ratio < 1.0:
+        return "Procesamiento rápido - bueno"
+    elif ratio < 2.0:
+        return "Procesamiento normal - aceptable"
+    elif ratio < 5.0:
+        return "Procesamiento lento - considerar aumentar frame_skip"
+    else:
+        return "Procesamiento muy lento - recomendado aumentar frame_skip o reducir resolución"
+
+
+def create_video_thumbnail(video_path: str, output_path: str, time_seconds: float = None) -> bool:
+    """
+    Crea una miniatura del video
+
+    Args:
+        video_path: Ruta del video
+        output_path: Ruta donde guardar la miniatura
+        time_seconds: Tiempo específico para la miniatura (None = mitad del video)
+
+    Returns:
+        True si se creó exitosamente, False en caso contrario
+    """
+    try:
+        video_info = get_video_info(video_path)
+        if not video_info:
+            return False
+
+        # Si no se especifica tiempo, usar la mitad del video
+        if time_seconds is None:
+            time_seconds = video_info["duration_seconds"] / 2
+
+        # Extraer frame
+        frame = get_video_frame_at_time(video_path, time_seconds)
+        if frame is None:
+            return False
+
+        # Redimensionar para thumbnail (máximo 320px de ancho)
+        height, width = frame.shape[:2]
+        if width > 320:
+            new_width = 320
+            new_height = int((320 * height) / width)
+            frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+        # Guardar thumbnail
+        return save_frame_as_image(frame, output_path, quality=85)
+
+    except Exception as e:
+        logger.error(f"Error creando thumbnail: {str(e)}")
+        return False
+
+
 def format_detection_confidence(confidence: float) -> str:
     """Formatea la confianza como porcentaje"""
     return f"{confidence * 100:.1f}%"
@@ -193,6 +478,146 @@ def normalize_bbox_coordinates(bbox: List[float], img_width: int, img_height: in
     ]
 
 
+def calculate_bbox_iou(bbox1: List[float], bbox2: List[float]) -> float:
+    """
+    Calcula Intersection over Union (IoU) entre dos bounding boxes
+
+    Args:
+        bbox1: Primera bbox [x1, y1, x2, y2]
+        bbox2: Segunda bbox [x1, y1, x2, y2]
+
+    Returns:
+        Valor IoU entre 0 y 1
+    """
+    try:
+        if len(bbox1) != 4 or len(bbox2) != 4:
+            return 0.0
+
+        x1_min, y1_min, x1_max, y1_max = bbox1
+        x2_min, y2_min, x2_max, y2_max = bbox2
+
+        # Calcular intersección
+        x_min = max(x1_min, x2_min)
+        y_min = max(y1_min, y2_min)
+        x_max = min(x1_max, x2_max)
+        y_max = min(y1_max, y2_max)
+
+        if x_max <= x_min or y_max <= y_min:
+            return 0.0
+
+        intersection = (x_max - x_min) * (y_max - y_min)
+        area1 = (x1_max - x1_min) * (y1_max - y1_min)
+        area2 = (x2_max - x2_min) * (y2_max - y2_min)
+        union = area1 + area2 - intersection
+
+        return intersection / union if union > 0 else 0.0
+
+    except Exception as e:
+        logger.error(f"Error calculando IoU: {str(e)}")
+        return 0.0
+
+
+def filter_overlapping_detections(detections: List[dict], iou_threshold: float = 0.5) -> List[dict]:
+    """
+    Filtra detecciones superpuestas usando Non-Maximum Suppression
+
+    Args:
+        detections: Lista de detecciones con 'bbox' y 'confidence'
+        iou_threshold: Umbral IoU para considerar superposición
+
+    Returns:
+        Lista filtrada de detecciones
+    """
+    if not detections:
+        return []
+
+    try:
+        # Ordenar por confianza (mayor a menor)
+        sorted_detections = sorted(detections, key=lambda x: x.get('confidence', 0), reverse=True)
+
+        filtered = []
+
+        for detection in sorted_detections:
+            bbox = detection.get('bbox', [])
+            if len(bbox) != 4:
+                continue
+
+            # Verificar si se superpone significativamente con alguna detección ya seleccionada
+            overlaps = False
+            for selected in filtered:
+                selected_bbox = selected.get('bbox', [])
+                if len(selected_bbox) == 4:
+                    iou = calculate_bbox_iou(bbox, selected_bbox)
+                    if iou > iou_threshold:
+                        overlaps = True
+                        break
+
+            if not overlaps:
+                filtered.append(detection)
+
+        logger.info(f"Filtrado NMS: {len(detections)} -> {len(filtered)} detecciones")
+        return filtered
+
+    except Exception as e:
+        logger.error(f"Error filtrando detecciones superpuestas: {str(e)}")
+        return detections
+
+
+def format_duration(seconds: float) -> str:
+    """
+    Formatea duración en segundos a formato legible
+
+    Args:
+        seconds: Duración en segundos
+
+    Returns:
+        String formateado (ej: "1m 30s", "45s", "2h 15m")
+    """
+    try:
+        if seconds < 0:
+            return "0s"
+
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+
+        if hours > 0:
+            return f"{hours}h {minutes}m"
+        elif minutes > 0:
+            return f"{minutes}m {secs}s"
+        else:
+            return f"{secs}s"
+
+    except Exception:
+        return "N/A"
+
+
+def get_memory_usage() -> dict:
+    """
+    Obtiene información de uso de memoria del sistema
+
+    Returns:
+        Diccionario con información de memoria
+    """
+    try:
+        import psutil
+
+        memory = psutil.virtual_memory()
+
+        return {
+            "total_gb": round(memory.total / (1024 ** 3), 2),
+            "available_gb": round(memory.available / (1024 ** 3), 2),
+            "used_gb": round(memory.used / (1024 ** 3), 2),
+            "percent_used": memory.percent,
+            "free_gb": round(memory.free / (1024 ** 3), 2)
+        }
+
+    except ImportError:
+        return {"error": "psutil no disponible"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 class PerformanceTimer:
     """Utilidad para medir tiempos de ejecución"""
 
@@ -218,3 +643,107 @@ class PerformanceTimer:
         if self.start_time and self.end_time:
             return self.end_time - self.start_time
         return 0.0
+
+
+class VideoProgressTracker:
+    """Utilidad para trackear progreso de procesamiento de video"""
+
+    def __init__(self, total_frames: int, name: str = "Video Processing"):
+        self.name = name
+        self.total_frames = total_frames
+        self.processed_frames = 0
+        self.start_time = None
+        self.last_update = 0
+
+    def start(self):
+        """Inicia el tracking"""
+        import time
+        self.start_time = time.time()
+        self.last_update = self.start_time
+        logger.info(f"🎬 Iniciando {self.name}: {self.total_frames} frames totales")
+
+    def update(self, frames_processed: int = 1):
+        """Actualiza el progreso"""
+        import time
+        self.processed_frames += frames_processed
+        current_time = time.time()
+
+        # Log cada 30 segundos o al completar
+        if current_time - self.last_update > 30 or self.processed_frames >= self.total_frames:
+            progress = (self.processed_frames / self.total_frames) * 100
+            elapsed = current_time - self.start_time
+
+            if self.processed_frames > 0:
+                estimated_total = elapsed * self.total_frames / self.processed_frames
+                remaining = estimated_total - elapsed
+
+                logger.info(f"📊 {self.name}: {progress:.1f}% "
+                            f"({self.processed_frames}/{self.total_frames}) - "
+                            f"Tiempo restante: {format_duration(remaining)}")
+
+            self.last_update = current_time
+
+    def finish(self):
+        """Finaliza el tracking"""
+        import time
+        if self.start_time:
+            total_time = time.time() - self.start_time
+            logger.success(f"✅ {self.name} completado en {format_duration(total_time)}")
+
+
+# Funciones de utilidad específicas para el proyecto ALPR
+
+def validate_peruvian_plate_format(plate_text: str) -> bool:
+    """
+    Valida si un texto corresponde a un formato de placa peruana válido
+
+    Args:
+        plate_text: Texto de la placa a validar
+
+    Returns:
+        True si es formato válido, False en caso contrario
+    """
+    import re
+
+    if not plate_text:
+        return False
+
+    # Patrones de placas peruanas - CORREGIDO
+    patterns = [
+        r'^[A-Z]{3}-\d{3}$',  # Formato actual: ABC-123
+        r'^[A-Z]{2}-\d{4}$',  # Formato anterior: AB-1234
+        r'^[A-Z]\d{2}-\d{3}$',  # Motos: A12-345
+        r'^[A-Z]{3}\d{3}$',  # Sin guión: ABC123
+    ]
+
+    for pattern in patterns:
+        if re.match(pattern, plate_text.upper()):
+            return True
+
+    return False
+
+
+def clean_plate_text(plate_text: str) -> str:
+    """
+    Limpia y normaliza texto de placa
+
+    Args:
+        plate_text: Texto crudo de la placa
+
+    Returns:
+        Texto limpio y normalizado
+    """
+    if not plate_text:
+        return ""
+
+    # Convertir a mayúsculas
+    cleaned = plate_text.upper()
+
+    # Remover caracteres no válidos
+    import re
+    cleaned = re.sub(r'[^A-Z0-9\-]', '', cleaned)
+
+    # Normalizar guiones
+    cleaned = re.sub(r'-+', '-', cleaned)
+
+    return cleaned.strip()

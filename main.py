@@ -7,6 +7,8 @@ from loguru import logger
 import sys
 import os
 
+from starlette.responses import JSONResponse
+
 # Configurar logging
 from config.settings import settings
 
@@ -32,6 +34,7 @@ if settings.log_file:
 # Importar después de configurar logging
 from models.model_manager import model_manager
 from api.routes import health, detection
+from api.routes.video import video_router  # Nueva importación
 
 
 @asynccontextmanager
@@ -119,6 +122,7 @@ app = FastAPI(
     ### 🎯 Características Principales:
     - **Detección precisa** de placas vehiculares con YOLOv8
     - **Reconocimiento de caracteres** con alta precisión
+    - **Procesamiento de videos** con tracking inteligente
     - **Validación de formato** para placas peruanas
     - **Procesamiento optimizado** con GPU CUDA
     - **API REST completa** y documentada
@@ -127,18 +131,23 @@ app = FastAPI(
     - **YOLOv8** para detección y reconocimiento
     - **PyTorch** con soporte CUDA 11.8
     - **FastAPI** para la API REST
-    - **OpenCV** para procesamiento de imágenes
+    - **OpenCV** para procesamiento de imágenes y videos
 
     ### 📋 Endpoints Principales:
     - `POST /api/v1/detect/image` - Detección completa en imágenes
-    - `POST /api/v1/detect/image/quick` - Detección rápida
+    - `POST /api/v1/detect/image/quick` - Detección rápida en imágenes
+    - `POST /api/v1/video/detect` - **NUEVO:** Detección en videos con tracking
+    - `POST /api/v1/video/detect/quick` - **NUEVO:** Detección rápida en videos
     - `GET /api/v1/health` - Health checks
     - `GET /docs` - Esta documentación
 
-    ### 🚀 Etapa Actual: 2 - Procesamiento de Imágenes
-    ✅ Detección y reconocimiento completo  
+    ### 🚀 Etapa Actual: 3 - Procesamiento de Videos
+    ✅ Detección y reconocimiento en imágenes  
     ✅ Validación de formatos peruanos  
-    ✅ Visualizaciones y resultados estructurados
+    ✅ **NUEVO:** Procesamiento de videos frame por frame  
+    ✅ **NUEVO:** Tracking inteligente de placas  
+    ✅ **NUEVO:** Eliminación de duplicados  
+    ✅ **NUEVO:** Selección de mejores detecciones
     """,
     version=settings.app_version,
     docs_url="/docs",
@@ -165,10 +174,12 @@ except Exception as e:
 # Incluir rutas
 app.include_router(health.router)
 app.include_router(detection.router)
+app.include_router(video_router)  # Nueva ruta de video
 
 logger.info("🛣️ Rutas registradas:")
 logger.info("   📊 Health: /api/v1/health/*")
 logger.info("   🔍 Detection: /api/v1/detect/*")
+logger.info("   🎬 Video: /api/v1/video/*")  # Nueva ruta
 
 
 # Endpoint raíz mejorado
@@ -186,12 +197,14 @@ async def root():
         "message": "🚗 CARID - Sistema ALPR",
         "version": settings.app_version,
         "status": "running",
-        "etapa_actual": "2 - Procesamiento de Imágenes",
+        "etapa_actual": "3 - Procesamiento de Videos",
         "funcionalidades": {
-            "deteccion_placas": "✅ Disponible",
+            "deteccion_placas_imagenes": "✅ Disponible",
             "reconocimiento_caracteres": "✅ Disponible",
             "validacion_formato": "✅ Disponible",
-            "procesamiento_videos": "⏳ Próximamente",
+            "procesamiento_videos": "✅ **NUEVO** Disponible",
+            "tracking_inteligente": "✅ **NUEVO** Disponible",
+            "eliminacion_duplicados": "✅ **NUEVO** Disponible",
             "streaming_tiempo_real": "⏳ Próximamente"
         },
         "modelos": {
@@ -203,14 +216,28 @@ async def root():
         "endpoints": {
             "deteccion_imagen": "/api/v1/detect/image",
             "deteccion_rapida": "/api/v1/detect/image/quick",
+            "deteccion_video": "/api/v1/video/detect",
+            "deteccion_video_rapida": "/api/v1/video/detect/quick",
+            "estadisticas_video": "/api/v1/video/stats",
             "health_check": "/api/v1/health",
             "documentacion": "/docs",
             "estadisticas": "/api/v1/detect/stats"
         },
         "configuracion": {
             "max_file_size_mb": settings.max_file_size,
-            "formatos_soportados": settings.allowed_extensions_list,
+            "formatos_imagenes": ["jpg", "jpeg", "png"],
+            "formatos_videos": ["mp4", "avi", "mov", "mkv", "webm"],  # NUEVO
+            "max_video_duration": settings.max_video_duration,  # NUEVO
             "cuda_disponible": models_status.get("cuda_available", False)
+        },
+        "novedades_etapa_3": {
+            "procesamiento_videos": "Frame por frame con optimización",
+            "tracking_placas": "Evita duplicados automáticamente",
+            "deteccion_unica": "Una placa por vehículo",
+            "mejor_confianza": "Selecciona automáticamente la mejor detección",
+            "formatos_soportados": "MP4, AVI, MOV, MKV, WebM",
+            "duracion_maxima": "5 minutos por video",
+            "procesamiento_paralelo": "Optimizado con AsyncIO"
         }
     }
 
@@ -235,18 +262,21 @@ async def global_exception_handler(request, exc):
     # Información adicional en modo debug
     error_detail = str(exc) if settings.debug else "Error interno del servidor"
 
-    return {
-        "success": False,
-        "error": {
-            "type": "InternalServerError",
-            "message": "Error interno del servidor",
-            "detail": error_detail
-        },
-        "endpoint": str(request.url.path),
-        "method": request.method,
-        "timestamp": str(__import__('datetime').datetime.utcnow().isoformat()),
-        "help": "Contacte al administrador si el problema persiste"
-    }
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": {
+                "type": "InternalServerError",
+                "message": "Error interno del servidor",
+                "detail": error_detail
+            },
+            "endpoint": str(request.url.path),
+            "method": request.method,
+            "timestamp": str(__import__('datetime').datetime.utcnow().isoformat()),
+            "help": "Contacte al administrador si el problema persiste"
+        }
+    )
 
 
 # Manejador específico para errores HTTP
@@ -254,29 +284,41 @@ async def global_exception_handler(request, exc):
 async def http_exception_handler(request, exc: HTTPException):
     logger.warning(f"⚠️ Error HTTP {exc.status_code} en {request.url}: {exc.detail}")
 
-    return {
-        "success": False,
-        "error": {
-            "type": "HTTPException",
-            "message": exc.detail,
-            "status_code": exc.status_code
-        },
-        "endpoint": str(request.url.path),
-        "method": request.method,
-        "timestamp": str(__import__('datetime').datetime.utcnow().isoformat())
-    }
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "error": {
+                "type": "HTTPException",
+                "message": exc.detail,
+                "status_code": exc.status_code
+            },
+            "endpoint": str(request.url.path),
+            "method": request.method,
+            "timestamp": str(__import__('datetime').datetime.utcnow().isoformat())
+        }
+    )
 
 
 if __name__ == "__main__":
     # Mensaje de inicio
-    logger.info("🚗 CARID ALPR - Etapa 2: Procesamiento de Imágenes")
+    logger.info("🚗 CARID ALPR - Etapa 3: Procesamiento de Videos")
     logger.info("=" * 60)
     logger.info("🎯 Funcionalidades disponibles:")
-    logger.info("   ✅ Detección de placas vehiculares")
+    logger.info("   ✅ Detección de placas en imágenes")
     logger.info("   ✅ Reconocimiento de caracteres")
     logger.info("   ✅ Validación de formatos peruanos")
+    logger.info("   ✅ Procesamiento de videos")
+    logger.info("   ✅ Tracking inteligente de placas")
+    logger.info("   ✅ Eliminación automática de duplicados")
+    logger.info("   ✅ Selección de mejores detecciones")
     logger.info("   ✅ API REST completa")
     logger.info("   ✅ Documentación interactiva")
+    logger.info("=" * 60)
+    logger.info("🎬 Formatos de video soportados:")
+    logger.info("   📹 MP4, AVI, MOV, MKV, WebM")
+    logger.info("   ⏱️ Duración máxima: 5 minutos")
+    logger.info("   🚀 Procesamiento optimizado frame por frame")
     logger.info("=" * 60)
 
     # Ejecutar servidor
