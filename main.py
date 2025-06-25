@@ -294,10 +294,10 @@ app = FastAPI(
 # 🔧 CONFIGURAR MIDDLEWARES PARA ARCHIVOS GRANDES Y STREAMING
 
 # 1. Middleware para streaming (primero para optimizar)
-app.add_middleware(StreamingMiddleware)
+# app.add_middleware(StreamingMiddleware)  # Temporalmente deshabilitado
 
 # 2. Middleware personalizado para archivos grandes
-app.add_middleware(LargeFileMiddleware)
+# app.add_middleware(LargeFileMiddleware)  # Temporalmente deshabilitado
 
 # 3. CORS con configuración extendida para WebSocket
 app.add_middleware(

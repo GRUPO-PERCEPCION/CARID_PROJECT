@@ -3,6 +3,7 @@ Rutas completas para streaming de video en tiempo real
 Sistema integrado de WebSocket + procesamiento + monitoreo
 """
 
+from starlette.requests import Request
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Request
 from fastapi import Depends, HTTPException, status, Query
 from typing import Optional, Dict, Any
@@ -1318,23 +1319,42 @@ async def download_session_results(
         )
 
 
-# Middleware para logging específico de streaming
-@streaming_router.middleware("http")
-async def log_streaming_requests(request: Request, call_next):
-    """Middleware para logging específico de streaming"""
 
-    start_time = time.time()
+# Agregar al final de api/routes/streaming.py
 
-    # Log de request entrante
-    if request.url.path.startswith("/api/v1/streaming"):
-        client_ip = request.client.host if request.client else "unknown"
-        logger.info(f"🌐 Streaming request: {request.method} {request.url.path} from {client_ip}")
+@streaming_router.websocket("/debug/{session_id}")
+async def debug_websocket_endpoint(websocket: WebSocket, session_id: str):
+    """WebSocket de debug mínimo"""
+    try:
+        print(f"🔌 DEBUG: Intentando conectar {session_id}")
+        await websocket.accept()
+        print(f"✅ DEBUG: Conectado {session_id}")
 
-    response = await call_next(request)
+        await websocket.send_text(json.dumps({
+            "type": "debug_connected",
+            "session_id": session_id,
+            "message": "Debug WebSocket funcionando"
+        }))
 
-    # Log de response
-    process_time = time.time() - start_time
-    if request.url.path.startswith("/api/v1/streaming"):
-        logger.info(f"✅ Streaming response: {response.status_code} in {process_time:.3f}s")
+        while True:
+            try:
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                print(f"📥 DEBUG: Mensaje recibido: {message}")
 
-    return response
+                await websocket.send_text(json.dumps({
+                    "type": "debug_echo",
+                    "received": message,
+                    "timestamp": time.time()
+                }))
+
+            except Exception as e:
+                print(f"❌ DEBUG: Error en loop: {str(e)}")
+                break
+
+    except Exception as e:
+        print(f"❌ DEBUG: Error en endpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        print(f"🔌 DEBUG: Desconectado {session_id}")
