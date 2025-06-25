@@ -58,11 +58,54 @@ class Settings(BaseSettings):
     tracking_iou_threshold: float = Field(default=0.2, env="TRACKING_IOU_THRESHOLD")  # IoU para tracking
     stability_frames_required: int = Field(default=5, env="STABILITY_FRAMES_REQUIRED")  # Frames para estabilidad
 
+    # 🌐 CONFIGURACIÓN DE STREAMING EN TIEMPO REAL (NUEVO)
+    streaming_enabled: bool = Field(default=True, env="STREAMING_ENABLED")
+    max_websocket_connections: int = Field(default=20, env="MAX_WEBSOCKET_CONNECTIONS")
+    websocket_ping_interval: int = Field(default=30, env="WEBSOCKET_PING_INTERVAL")
+    websocket_ping_timeout: int = Field(default=10, env="WEBSOCKET_PING_TIMEOUT")
+
+    # Frame processing para streaming
+    streaming_frame_quality: int = Field(default=75, env="STREAMING_FRAME_QUALITY")  # Calidad JPEG 1-100
+    streaming_frame_max_size: int = Field(default=800, env="STREAMING_FRAME_MAX_SIZE")  # Ancho máximo en pixels
+    streaming_send_interval: float = Field(default=0.5, env="STREAMING_SEND_INTERVAL")  # Segundos entre envíos
+    streaming_buffer_size: int = Field(default=10, env="STREAMING_BUFFER_SIZE")  # Frames en buffer
+
+    # Optimización de streaming
+    streaming_compression_enabled: bool = Field(default=True, env="STREAMING_COMPRESSION_ENABLED")
+    streaming_adaptive_quality: bool = Field(default=True, env="STREAMING_ADAPTIVE_QUALITY")
+    streaming_throttle_enabled: bool = Field(default=True, env="STREAMING_THROTTLE_ENABLED")
+
     # Logging
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
     log_file: str = Field(default="./logs/api.log", env="LOG_FILE")
 
-    # ✅ MÉTODOS ACTUALIZADOS PARA TRACKING AVANZADO
+    # ✅ MÉTODOS ACTUALIZADOS PARA STREAMING EN TIEMPO REAL
+
+    def get_streaming_config(self) -> dict:
+        """Configuración específica para streaming en tiempo real"""
+        return {
+            "enabled": self.streaming_enabled,
+            "websocket": {
+                "max_connections": self.max_websocket_connections,
+                "ping_interval": self.websocket_ping_interval,
+                "ping_timeout": self.websocket_ping_timeout
+            },
+            "frame_processing": {
+                "quality": self.streaming_frame_quality,
+                "max_size": self.streaming_frame_max_size,
+                "send_interval": self.streaming_send_interval,
+                "buffer_size": self.streaming_buffer_size,
+                "compression_enabled": self.streaming_compression_enabled,
+                "adaptive_quality": self.streaming_adaptive_quality,
+                "throttle_enabled": self.streaming_throttle_enabled
+            },
+            "detection": {
+                "confidence_threshold": max(0.25, self.model_confidence_threshold - 0.15),
+                "iou_threshold": self.model_iou_threshold,
+                "frame_skip": max(1, self.video_frame_skip - 1),  # Más frames para streaming
+                "min_detection_frames": max(1, self.video_min_detection_frames - 1)
+            }
+        }
 
     def get_video_processing_config(self) -> dict:
         """Retorna configuración optimizada para procesamiento de video"""
@@ -137,6 +180,7 @@ class Settings(BaseSettings):
             f"{self.static_dir}/results",
             f"{self.static_dir}/videos",  # NUEVO: para videos procesados
             f"{self.static_dir}/frames",  # NUEVO: para frames extraídos
+            f"{self.static_dir}/streaming",  # NUEVO: para streaming frames
             os.path.dirname(self.log_file) if self.log_file else "./logs"
         ]
 
@@ -170,19 +214,19 @@ class Settings(BaseSettings):
         validation["all_valid"] = all(validation.values())
         return validation
 
-    def get_video_processing_config(self) -> dict:
-        """Retorna configuración optimizada para procesamiento de video"""
-        return {
-            "max_duration": self.max_video_duration,
-            "frame_skip": self.video_frame_skip,
-            "min_detection_frames": self.video_min_detection_frames,
-            "similarity_threshold": self.video_similarity_threshold,
-            "max_tracking_distance": self.video_max_tracking_distance,
-            "processing_timeout": self.video_processing_timeout,
-            "confidence_threshold": max(0.3, self.model_confidence_threshold - 0.1),  # Más permisivo para video
-            "iou_threshold": self.model_iou_threshold,
-            "supported_formats": self.video_extensions_list
+    def validate_streaming_settings(self) -> dict:
+        """Valida configuraciones específicas de streaming"""
+        validation = {
+            "streaming_enabled": self.streaming_enabled,
+            "max_connections_valid": 1 <= self.max_websocket_connections <= 50,
+            "frame_quality_valid": 10 <= self.streaming_frame_quality <= 100,
+            "frame_size_valid": 320 <= self.streaming_frame_max_size <= 1920,
+            "send_interval_valid": 0.1 <= self.streaming_send_interval <= 5.0,
+            "buffer_size_valid": 1 <= self.streaming_buffer_size <= 50
         }
+
+        validation["all_valid"] = all(validation.values())
+        return validation
 
     def _get_file_size(self, file_path: str) -> float:
         """Obtiene el tamaño del archivo en MB"""
