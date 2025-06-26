@@ -222,11 +222,21 @@ class Settings(BaseSettings):
             "frame_quality_valid": 10 <= self.streaming_frame_quality <= 100,
             "frame_size_valid": 320 <= self.streaming_frame_max_size <= 1920,
             "send_interval_valid": 0.1 <= self.streaming_send_interval <= 5.0,
-            "buffer_size_valid": 1 <= self.streaming_buffer_size <= 50
+            "buffer_size_valid": 1 <= self.streaming_buffer_size <= 50,
+            "websockets_available": self._check_websockets_available()
         }
 
         validation["all_valid"] = all(validation.values())
         return validation
+
+    def _check_websockets_available(self) -> bool:
+        """Verifica que las dependencias de WebSocket estén disponibles"""
+        try:
+            import websockets
+            return True
+        except ImportError:
+            logger.warning("⚠️ Librería 'websockets' no encontrada. Ejecuta: pip install websockets")
+            return False
 
     def _get_file_size(self, file_path: str) -> float:
         """Obtiene el tamaño del archivo en MB"""

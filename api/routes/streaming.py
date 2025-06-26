@@ -14,7 +14,7 @@ import uuid
 from loguru import logger
 
 from api.websocket_manager import connection_manager, StreamingStatus
-from models import model_manager
+from models.model_manager import model_manager
 from services.streaming_service import streaming_service
 from services.file_service import file_service
 from api.dependencies import get_model_manager, log_request_info
@@ -27,26 +27,13 @@ streaming_router = APIRouter(prefix="/api/v1/streaming", tags=["🎬 Real-time V
 
 @streaming_router.websocket("/ws/{session_id}")
 async def websocket_streaming_endpoint(websocket: WebSocket, session_id: str, request: Request):
-    """
-    🔌 WebSocket principal para streaming en tiempo real
-
-    **Funcionalidades:**
-    - Conexión y autenticación
-    - Mensajes de control (pause/resume/stop)
-    - Recepción de updates de procesamiento
-    - Manejo de errores y desconexiones
-
-    **Mensajes soportados:**
-    - `ping` - Verificación de conectividad
-    - `pause_processing` - Pausar procesamiento
-    - `resume_processing` - Reanudar procesamiento
-    - `stop_processing` - Detener procesamiento
-    - `get_status` - Solicitar estado actual
-    - `adjust_quality` - Ajustar calidad de streaming
-    """
+    """WebSocket principal para streaming en tiempo real"""
     client_ip = request.client.host if request.client else "unknown"
 
     try:
+        # ✅ AGREGAR INICIALIZACIÓN DE CLEANUP
+        await connection_manager.start_cleanup_if_needed()
+
         # Intentar conectar cliente
         connected = await connection_manager.connect(websocket, session_id, client_ip)
         if not connected:
@@ -1321,6 +1308,53 @@ async def download_session_results(
 
 
 # Agregar al final de api/routes/streaming.py
+@streaming_router.get("/debug/websocket-test")
+async def websocket_debug_info():
+    """Endpoint para debuggear problemas de WebSocket"""
+    try:
+        # Verificar dependencias
+        websockets_available = False
+        try:
+            import websockets
+            websockets_available = True
+            websockets_version = websockets.__version__
+        except ImportError:
+            websockets_version = "No instalado"
+
+        # Verificar uvicorn
+        uvicorn_available = False
+        try:
+            import uvicorn
+            uvicorn_available = True
+            uvicorn_version = uvicorn.__version__
+        except ImportError:
+            uvicorn_version = "No instalado"
+
+        # Estado del connection manager
+        sessions_count = len(connection_manager.sessions)
+
+        return {
+            "websocket_dependencies": {
+                "websockets_available": websockets_available,
+                "websockets_version": websockets_version,
+                "uvicorn_available": uvicorn_available,
+                "uvicorn_version": uvicorn_version
+            },
+            "connection_manager": {
+                "active_sessions": sessions_count,
+                "cleanup_task_running": connection_manager._cleanup_task is not None,
+                "max_connections": settings.max_websocket_connections
+            },
+            "streaming_config": settings.get_streaming_config(),
+            "recommendations": [
+                "1. Verificar que 'websockets' esté instalado: pip install websockets",
+                "2. Verificar que uvicorn tenga soporte estándar: pip install 'uvicorn[standard]'",
+                "3. Usar WebSocket URL: ws://localhost:8000/api/v1/streaming/ws/{session_id}",
+                "4. Conectar WebSocket ANTES de enviar POST a /start-session"
+            ]
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 @streaming_router.websocket("/debug/{session_id}")
 async def debug_websocket_endpoint(websocket: WebSocket, session_id: str):

@@ -612,10 +612,8 @@ if __name__ == "__main__":
         reload=settings.debug,
         log_level=settings.log_level.lower(),
         access_log=True,
-        # 🔧 CONFIGURACIONES OPTIMIZADAS PARA STREAMING
-        timeout_keep_alive=60,  # WebSocket necesita más tiempo
-        limit_max_requests=2000,  # Más requests para streaming
-        backlog=4096,  # Más conexiones en cola
-        ws_ping_interval=30,  # Ping WebSocket cada 30s
-        ws_ping_timeout=10  # Timeout de ping WebSocket
+        timeout_keep_alive=60,
+        limit_max_requests=2000,
+        backlog=4096,
+        ws="auto",
     )

@@ -34,3 +34,10 @@ black==23.11.0
 pathlib2==2.3.7
 starlette~=0.27.0
 requests~=2.32.4
+
+# ✅ AGREGAR ESTAS LÍNEAS A REQUIREMENTS.TXT:
+websockets==12.0
+python-multipart==0.0.6
+
+# ✅ ASEGURAR QUE UVICORN TENGA SOPORTE WEBSOCKET:
+uvicorn[standard]==0.24.0

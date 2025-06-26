@@ -184,7 +184,6 @@ class ConnectionManager:
 
     def _start_cleanup_task(self):
         """Inicia tarea de limpieza periódica"""
-
         async def cleanup_loop():
             while True:
                 try:
@@ -193,13 +192,39 @@ class ConnectionManager:
                 except Exception as e:
                     logger.error(f"❌ Error en cleanup task: {str(e)}")
 
-        # Crear tarea en el loop principal
-        try:
-            loop = asyncio.get_event_loop()
-            self._cleanup_task = loop.create_task(cleanup_loop())
-        except RuntimeError:
-            # No hay loop activo aún, se creará después
-            pass
+        # MÉTODO CORREGIDO:
+        def start_cleanup():
+            try:
+                loop = asyncio.get_running_loop()
+                self._loop = loop
+                self._cleanup_task = loop.create_task(cleanup_loop())
+                logger.info("✅ Cleanup task iniciado")
+            except RuntimeError:
+                # No hay loop activo, se iniciará después
+                logger.info("ℹ️ Loop no disponible, cleanup se iniciará después")
+                pass
+
+        start_cleanup()
+
+    async def start_cleanup_if_needed(self):
+        """Inicia cleanup si no está iniciado"""
+        if self._cleanup_task is None:
+            try:
+                loop = asyncio.get_running_loop()
+                self._loop = loop
+
+                async def cleanup_loop():
+                    while True:
+                        try:
+                            await asyncio.sleep(60)  # Cada minuto
+                            await self._cleanup_inactive_sessions()
+                        except Exception as e:
+                            logger.error(f"❌ Error en cleanup task: {str(e)}")
+
+                self._cleanup_task = loop.create_task(cleanup_loop())
+                logger.info("✅ Cleanup task iniciado desde WebSocket")
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo iniciar cleanup: {str(e)}")
 
     async def connect(self, websocket: WebSocket, session_id: str, client_ip: str = "unknown") -> bool:
         """
