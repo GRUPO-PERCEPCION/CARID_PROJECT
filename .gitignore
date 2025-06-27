@@ -205,3 +205,5 @@ cython_debug/
 
 /static
 /static/results
+
+uploads
