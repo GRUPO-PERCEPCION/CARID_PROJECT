@@ -9,5 +9,6 @@ from . import video
 __all__ = [
     "health",
     "detection",
-    "video"
+    "video",
+    "streaming"
 ]
