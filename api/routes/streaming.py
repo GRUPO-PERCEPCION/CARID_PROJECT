@@ -247,7 +247,7 @@ async def test_websocket(websocket: WebSocket, session_id: str):
 # 🎮 MANEJADOR DE MENSAJES
 
 async def handle_websocket_message(session: StreamingSession, message: Dict[str, Any]):
-    """Maneja mensajes recibidos del cliente - VERSIÓN CORREGIDA"""
+    """Maneja mensajes recibidos del cliente - VERSIÓN CORREGIDA CON CONTROLES ADICIONALES"""
 
     message_type = message.get("type", "")
     data = message.get("data", {})
@@ -282,7 +282,7 @@ async def handle_websocket_message(session: StreamingSession, message: Dict[str,
 
             if not session.video_path:
                 await session.send_message({
-                    "type": "error",
+                    "type": "streaming_error",
                     "error": "No hay video cargado para procesar"
                 })
                 return
@@ -323,12 +323,102 @@ async def handle_websocket_message(session: StreamingSession, message: Dict[str,
                 })
                 session.is_processing = False
 
+        elif message_type == "pause_processing":
+            """⏸️ NUEVO - PAUSAR PROCESAMIENTO"""
+            logger.info(f"⏸️ Pausando procesamiento para sesión {session.session_id}")
+
+            if not session.is_processing:
+                await session.send_message({
+                    "type": "error",
+                    "error": "No hay procesamiento activo para pausar"
+                })
+                return
+
+            try:
+                from services.streaming_service import streaming_service
+                success = await streaming_service.pause_streaming(session.session_id)
+
+                if success:
+                    session.is_processing = False  # Marcar como pausado
+                    await session.send_message({
+                        "type": "processing_paused",
+                        "data": {
+                            "message": "Procesamiento pausado exitosamente",
+                            "session_id": session.session_id,
+                            "timestamp": time.time()
+                        }
+                    })
+                else:
+                    await session.send_message({
+                        "type": "error",
+                        "error": "No se pudo pausar el procesamiento"
+                    })
+
+            except Exception as e:
+                logger.error(f"❌ Error pausando procesamiento: {str(e)}")
+                await session.send_message({
+                    "type": "error",
+                    "error": f"Error pausando procesamiento: {str(e)}"
+                })
+
+        elif message_type == "resume_processing":
+            """▶️ NUEVO - REANUDAR PROCESAMIENTO"""
+            logger.info(f"▶️ Reanudando procesamiento para sesión {session.session_id}")
+
+            if session.is_processing:
+                await session.send_message({
+                    "type": "error",
+                    "error": "El procesamiento ya está activo"
+                })
+                return
+
+            if not session.video_path:
+                await session.send_message({
+                    "type": "error",
+                    "error": "No hay video cargado para reanudar"
+                })
+                return
+
+            try:
+                from services.streaming_service import streaming_service
+                success = await streaming_service.resume_streaming(session.session_id)
+
+                if success:
+                    session.is_processing = True  # Marcar como activo
+                    await session.send_message({
+                        "type": "processing_resumed",
+                        "data": {
+                            "message": "Procesamiento reanudado exitosamente",
+                            "session_id": session.session_id,
+                            "timestamp": time.time()
+                        }
+                    })
+                else:
+                    await session.send_message({
+                        "type": "error",
+                        "error": "No se pudo reanudar el procesamiento"
+                    })
+
+            except Exception as e:
+                logger.error(f"❌ Error reanudando procesamiento: {str(e)}")
+                await session.send_message({
+                    "type": "error",
+                    "error": f"Error reanudando procesamiento: {str(e)}"
+                })
+
         elif message_type == "stop_processing":
-            # Detener procesamiento
+            """⏹️ DETENER PROCESAMIENTO"""
+            logger.info(f"⏹️ Deteniendo procesamiento para sesión {session.session_id}")
+
+            # Marcar como detenido
             session.is_processing = False
             await session.send_message({
                 "type": "processing_stopped",
-                "message": "Procesamiento detenido"
+                "data": {
+                    "message": "Procesamiento detenido",
+                    "session_id": session.session_id,
+                    "timestamp": time.time()
+                }
             })
 
             # Detener en el servicio de streaming
@@ -338,6 +428,57 @@ async def handle_websocket_message(session: StreamingSession, message: Dict[str,
             except Exception as e:
                 logger.warning(f"⚠️ Error deteniendo streaming: {str(e)}")
 
+        elif message_type == "request_frame":
+            """🖼️ NUEVO - SOLICITAR FRAME ACTUAL"""
+            logger.debug(f"📷 Solicitando frame actual para sesión {session.session_id}")
+
+            try:
+                from services.streaming_service import streaming_service
+                current_frame = await streaming_service.get_current_frame(session.session_id)
+
+                if current_frame:
+                    await session.send_message({
+                        "type": "current_frame",
+                        "data": current_frame
+                    })
+                else:
+                    await session.send_message({
+                        "type": "current_frame",
+                        "data": None,
+                        "message": "No hay frame disponible"
+                    })
+
+            except Exception as e:
+                logger.warning(f"⚠️ Error obteniendo frame: {str(e)}")
+
+        elif message_type == "adjust_quality":
+            """🎚️ NUEVO - AJUSTAR CALIDAD DE STREAMING"""
+            quality = data.get("quality", 50)
+            frame_skip = data.get("frame_skip", 2)
+
+            logger.info(f"🎚️ Ajustando calidad para {session.session_id}: Q={quality}, Skip={frame_skip}")
+
+            try:
+                from services.streaming_service import streaming_service
+                success = await streaming_service.adjust_streaming_quality(
+                    session.session_id,
+                    quality,
+                    frame_skip
+                )
+
+                if success:
+                    await session.send_message({
+                        "type": "quality_adjusted",
+                        "data": {
+                            "quality": quality,
+                            "frame_skip": frame_skip,
+                            "message": "Calidad ajustada exitosamente"
+                        }
+                    })
+
+            except Exception as e:
+                logger.warning(f"⚠️ Error ajustando calidad: {str(e)}")
+
         else:
             # Mensaje no reconocido
             logger.warning(f"❓ Tipo de mensaje no soportado: {message_type}")
@@ -345,7 +486,14 @@ async def handle_websocket_message(session: StreamingSession, message: Dict[str,
                 "type": "error",
                 "error": f"Tipo de mensaje no soportado: {message_type}",
                 "supported_types": [
-                    "ping", "get_status", "start_processing", "stop_processing"
+                    "ping",
+                    "get_status",
+                    "start_processing",
+                    "pause_processing",
+                    "resume_processing",
+                    "stop_processing",
+                    "request_frame",
+                    "adjust_quality"
                 ]
             })
 
