@@ -247,12 +247,14 @@ async def test_websocket(websocket: WebSocket, session_id: str):
 # 🎮 MANEJADOR DE MENSAJES
 
 async def handle_websocket_message(session: StreamingSession, message: Dict[str, Any]):
-    """Maneja mensajes recibidos del cliente"""
+    """Maneja mensajes recibidos del cliente - VERSIÓN CORREGIDA"""
 
     message_type = message.get("type", "")
     data = message.get("data", {})
 
     try:
+        logger.info(f"🎯 Procesando mensaje: {message_type} para sesión {session.session_id}")
+
         if message_type == "ping":
             # Responder pong
             await session.send_message({
@@ -275,12 +277,51 @@ async def handle_websocket_message(session: StreamingSession, message: Dict[str,
             })
 
         elif message_type == "start_processing":
-            # Iniciar procesamiento (placeholder)
+            """🔧 HANDLER CLAVE - INICIAR PROCESAMIENTO"""
+            logger.info(f"🎬 Iniciando procesamiento para sesión {session.session_id}")
+
+            if not session.video_path:
+                await session.send_message({
+                    "type": "error",
+                    "error": "No hay video cargado para procesar"
+                })
+                return
+
+            # Marcar como procesando
             session.is_processing = True
             await session.send_message({
-                "type": "processing_started",
-                "message": "Procesamiento iniciado"
+                "type": "streaming_started",
+                "data": {
+                    "message": "Procesamiento de streaming iniciado",
+                    "video_path": session.video_path,
+                    "session_id": session.session_id
+                }
             })
+
+            # 🚀 INICIAR PROCESAMIENTO DE VIDEO EN BACKGROUND
+            try:
+                from services.streaming_service import streaming_service
+                success = await streaming_service.start_video_streaming(
+                    session.session_id,
+                    session.video_path,
+                    getattr(session, 'file_info', {}),
+                    data.get('options', {})
+                )
+
+                if not success:
+                    await session.send_message({
+                        "type": "streaming_error",
+                        "error": "No se pudo iniciar el procesamiento de video"
+                    })
+                    session.is_processing = False
+
+            except Exception as e:
+                logger.error(f"❌ Error iniciando procesamiento: {str(e)}")
+                await session.send_message({
+                    "type": "streaming_error",
+                    "error": f"Error iniciando procesamiento: {str(e)}"
+                })
+                session.is_processing = False
 
         elif message_type == "stop_processing":
             # Detener procesamiento
@@ -290,8 +331,16 @@ async def handle_websocket_message(session: StreamingSession, message: Dict[str,
                 "message": "Procesamiento detenido"
             })
 
+            # Detener en el servicio de streaming
+            try:
+                from services.streaming_service import streaming_service
+                await streaming_service.stop_streaming(session.session_id)
+            except Exception as e:
+                logger.warning(f"⚠️ Error deteniendo streaming: {str(e)}")
+
         else:
             # Mensaje no reconocido
+            logger.warning(f"❓ Tipo de mensaje no soportado: {message_type}")
             await session.send_message({
                 "type": "error",
                 "error": f"Tipo de mensaje no soportado: {message_type}",
@@ -312,17 +361,15 @@ async def handle_websocket_message(session: StreamingSession, message: Dict[str,
 
 @streaming_router.post("/upload")
 async def upload_video_for_streaming(
-    session_id: str = Form(..., description="ID de sesión WebSocket"),
-    file: UploadFile = File(..., description="Video a procesar"),
-    request_id: str = Depends(log_request_info),
-    models = Depends(get_model_manager)
+        session_id: str = Form(..., description="ID de sesión WebSocket"),
+        file: UploadFile = File(..., description="Video a procesar"),
+        confidence_threshold: Optional[float] = Form(0.3, description="Umbral de confianza"),
+        frame_skip: Optional[int] = Form(2, description="Salto de frames"),
+        max_duration: Optional[int] = Form(600, description="Duración máxima"),
+        request_id: str = Depends(log_request_info),
+        models=Depends(get_model_manager)
 ):
-    """
-    📤 SUBIR VIDEO PARA STREAMING
-
-    Sube un video y lo prepara para procesamiento en tiempo real
-    Requiere una sesión WebSocket activa
-    """
+    """📤 UPLOAD CORREGIDO CON AUTO-START"""
 
     try:
         # Verificar que la sesión existe
@@ -337,7 +384,7 @@ async def upload_video_for_streaming(
                 }
             )
 
-        # Validar archivo
+        # Validar archivo (código existente)...
         if not file.filename:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -360,6 +407,9 @@ async def upload_video_for_streaming(
         file_path, file_info = await file_service.save_upload_file(file, "streaming_")
         session.video_path = file_path
 
+        # 🔧 GUARDAR INFO DEL ARCHIVO EN LA SESIÓN
+        session.file_info = file_info
+
         # Notificar al cliente vía WebSocket
         await session.send_message({
             "type": "video_uploaded",
@@ -367,20 +417,65 @@ async def upload_video_for_streaming(
                 "filename": file_info["filename"],
                 "size_mb": file_info["size_mb"],
                 "file_type": file_info["file_type"],
-                "dimensions": file_info.get("dimensions")
+                "dimensions": file_info.get("dimensions"),
+                "ready_for_processing": True
             }
         })
 
         logger.info(f"📤 Video subido para {session_id}: {file_info['filename']}")
 
+        # 🚀 AUTO-INICIAR PROCESAMIENTO DESPUÉS DE 2 SEGUNDOS
+        async def auto_start_processing():
+            await asyncio.sleep(2)
+            try:
+                logger.info(f"🎬 Auto-iniciando procesamiento para {session_id}")
+
+                # Configurar parámetros
+                processing_params = {
+                    "confidence_threshold": confidence_threshold,
+                    "frame_skip": frame_skip,
+                    "max_duration": max_duration
+                }
+
+                # Iniciar streaming
+                from services.streaming_service import streaming_service
+                success = await streaming_service.start_video_streaming(
+                    session_id,
+                    file_path,
+                    file_info,
+                    processing_params
+                )
+
+                if success:
+                    logger.info(f"✅ Streaming auto-iniciado para {session_id}")
+                    session.is_processing = True
+                else:
+                    logger.error(f"❌ Error auto-iniciando streaming para {session_id}")
+                    await session.send_message({
+                        "type": "streaming_error",
+                        "error": "No se pudo auto-iniciar el procesamiento"
+                    })
+
+            except Exception as e:
+                logger.error(f"❌ Error en auto-start: {str(e)}")
+                await session.send_message({
+                    "type": "streaming_error",
+                    "error": f"Error auto-iniciando: {str(e)}"
+                })
+
+        # Ejecutar auto-start en background
+        asyncio.create_task(auto_start_processing())
+
         return {
             "success": True,
-            "message": "Video subido correctamente",
+            "message": "Video subido correctamente - Procesamiento iniciará automáticamente",
             "session_id": session_id,
             "file_info": file_info,
+            "processing_will_start": True,
             "next_steps": [
                 "El video está listo para procesamiento",
-                "Envía mensaje 'start_processing' vía WebSocket para comenzar"
+                "El streaming iniciará automáticamente en 2 segundos",
+                "Mantén la conexión WebSocket abierta para recibir actualizaciones"
             ]
         }
 

@@ -255,31 +255,28 @@ class StreamingVideoProcessor:
             file_info: Dict[str, Any],
             processing_params: Dict[str, Any]
     ) -> bool:
-        """
-        Inicia el streaming de procesamiento de video
-
-        Args:
-            session_id: ID de la sesión WebSocket
-            video_path: Ruta del archivo de video
-            file_info: Información del archivo
-            processing_params: Parámetros de procesamiento
-
-        Returns:
-            True si se inició correctamente
-        """
+        """VERSIÓN CORREGIDA - Inicia el streaming con debugging"""
         try:
-            logger.info(f"🎬 Iniciando streaming para sesión: {session_id}")
+            logger.info(f"🎬 [DEBUG] Iniciando streaming para sesión: {session_id}")
+            logger.info(f"📹 [DEBUG] Video: {video_path}")
+            logger.info(f"⚙️ [DEBUG] Params: {processing_params}")
+
+            # 🔧 IMPORTAR AQUÍ PARA EVITAR CIRCULAR IMPORTS
+            from api.websocket_manager import connection_manager
 
             # Verificar que la sesión existe
             session = connection_manager.get_session(session_id)
             if not session:
-                logger.error(f"❌ Sesión no encontrada: {session_id}")
+                logger.error(f"❌ [DEBUG] Sesión no encontrada: {session_id}")
                 return False
 
             # Obtener información del video
             video_info = get_video_info(video_path)
             if not video_info:
+                logger.error(f"❌ [DEBUG] No se pudo obtener info del video: {video_path}")
                 raise Exception("No se pudo obtener información del video")
+
+            logger.info(f"📊 [DEBUG] Info video: {video_info}")
 
             # Crear gestores para esta sesión
             self.quality_managers[session_id] = AdaptiveQualityManager(session_id)
@@ -300,6 +297,7 @@ class StreamingVideoProcessor:
             await connection_manager.send_message(session_id, {
                 "type": "streaming_started",
                 "data": {
+                    "message": "Streaming iniciado exitosamente",
                     "video_info": video_info,
                     "file_info": file_info,
                     "processing_params": processing_params,
@@ -308,20 +306,28 @@ class StreamingVideoProcessor:
                 }
             })
 
-            # Iniciar procesamiento en background
+            logger.info(f"✅ [DEBUG] Información inicial enviada para {session_id}")
+
+            # 🚀 INICIAR PROCESAMIENTO EN BACKGROUND INMEDIATAMENTE
             asyncio.create_task(self._process_video_stream(session_id))
 
+            logger.info(f"🎯 [DEBUG] Task de procesamiento creado para {session_id}")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Error iniciando streaming {session_id}: {str(e)}")
+            logger.error(f"❌ [DEBUG] Error iniciando streaming {session_id}: {str(e)}")
             await self._handle_streaming_error(session_id, str(e))
             return False
 
     async def _process_video_stream(self, session_id: str):
-        """Procesa el video frame por frame con streaming"""
+        """VERSIÓN CORREGIDA - Procesa el video frame por frame con más debugging"""
+
+        # 🔧 IMPORTAR AQUÍ PARA EVITAR CIRCULAR IMPORTS
+        from api.websocket_manager import connection_manager
+
         session = connection_manager.get_session(session_id)
         if not session:
+            logger.error(f"❌ [DEBUG] Sesión no encontrada en _process_video_stream: {session_id}")
             return
 
         try:
@@ -329,6 +335,9 @@ class StreamingVideoProcessor:
             processing_params = session.processing_params
             quality_manager = self.quality_managers[session_id]
             detection_tracker = self.detection_trackers[session_id]
+
+            logger.info(f"🎬 [DEBUG] Iniciando procesamiento de video para {session_id}")
+            logger.info(f"📹 [DEBUG] Archivo: {video_path}")
 
             # Configuración de procesamiento
             frame_skip = processing_params.get("frame_skip", 2)
@@ -338,23 +347,52 @@ class StreamingVideoProcessor:
             # Abrir video
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
-                raise Exception("No se pudo abrir el video")
+                raise Exception(f"No se pudo abrir el video: {video_path}")
 
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            logger.info(f"📊 [DEBUG] Video abierto - FPS: {fps}, Frames: {total_frames}")
 
             # Variables de control
             frame_num = 0
             processed_count = 0
             last_send_time = time.time()
-            send_interval = self.streaming_config["frame_processing"]["send_interval"]
+            send_interval = 2.0  # Enviar actualizaciones cada 2 segundos
 
-            logger.info(f"📹 Procesando video: {total_frames} frames a {fps} FPS")
+            # 🚀 ENVIAR PRIMERA ACTUALIZACIÓN
+            await connection_manager.send_message(session_id, {
+                "type": "streaming_update",
+                "data": {
+                    "progress": {
+                        "processed_frames": 0,
+                        "total_frames": total_frames,
+                        "progress_percent": 0.0,
+                        "processing_speed": 0.0
+                    },
+                    "frame_info": {
+                        "frame_number": 0,
+                        "timestamp": 0.0,
+                        "processing_time": 0.0,
+                        "success": True
+                    },
+                    "detection_summary": {
+                        "total_detections": 0,
+                        "unique_plates_count": 0,
+                        "valid_plates_count": 0,
+                        "frames_with_detections": 0,
+                        "best_plates": [],
+                        "latest_detections": []
+                    }
+                }
+            })
+
+            logger.info(f"📹 [DEBUG] Procesando video: {total_frames} frames a {fps} FPS")
 
             while True:
                 # Verificar controles de sesión
                 if session.should_stop:
-                    logger.info(f"🛑 Deteniendo por solicitud: {session_id}")
+                    logger.info(f"🛑 [DEBUG] Deteniendo por solicitud: {session_id}")
                     break
 
                 # Manejar pausa
@@ -365,13 +403,13 @@ class StreamingVideoProcessor:
                 # Leer frame
                 ret, frame = cap.read()
                 if not ret:
-                    logger.info(f"📹 Fin del video alcanzado: {session_id}")
+                    logger.info(f"📹 [DEBUG] Fin del video alcanzado: {session_id}")
                     break
 
                 # Verificar límite de duración
                 current_time_in_video = frame_num / fps
                 if current_time_in_video > max_duration:
-                    logger.info(f"⏰ Límite de duración alcanzado: {max_duration}s")
+                    logger.info(f"⏰ [DEBUG] Límite de duración alcanzado: {max_duration}s")
                     break
 
                 # Procesar solo cada N frames (según frame_skip)
@@ -379,6 +417,8 @@ class StreamingVideoProcessor:
                     try:
                         # Convertir a RGB
                         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                        logger.debug(f"🔍 [DEBUG] Procesando frame {frame_num}")
 
                         # Procesar frame
                         streaming_frame = await self._process_single_frame(
@@ -414,30 +454,33 @@ class StreamingVideoProcessor:
                                 )
                                 session.best_detection = best_overall
 
+                            logger.info(f"🎯 [DEBUG] Frame {frame_num}: {len(streaming_frame.detections)} detecciones")
+
                         # Enviar datos si es momento adecuado
                         current_time = time.time()
                         should_send = (
                                 current_time - last_send_time >= send_interval or
                                 len(streaming_frame.detections) > 0 or
-                                processed_count % 15 == 0  # Cada 15 frames para progreso
+                                processed_count % 10 == 0  # Cada 10 frames para progreso
                         )
 
                         if should_send:
                             await self._send_streaming_update(session_id, streaming_frame, detection_tracker)
                             last_send_time = current_time
+                            logger.debug(f"📤 [DEBUG] Actualización enviada para frame {frame_num}")
 
                         # Pequeña pausa para no saturar
-                        await asyncio.sleep(0.02)
+                        await asyncio.sleep(0.01)
 
                     except Exception as e:
-                        logger.warning(f"⚠️ Error procesando frame {frame_num}: {str(e)}")
+                        logger.warning(f"⚠️ [DEBUG] Error procesando frame {frame_num}: {str(e)}")
 
                 frame_num += 1
 
                 # Actualizar progreso general
                 if frame_num % 100 == 0:  # Cada 100 frames
                     progress = (frame_num / total_frames) * 100
-                    logger.info(f"📊 Progreso {session_id}: {progress:.1f}% - "
+                    logger.info(f"📊 [DEBUG] Progreso {session_id}: {progress:.1f}% - "
                                 f"Placas únicas: {len(detection_tracker.unique_plates)}")
 
             # Finalizar streaming
@@ -445,7 +488,7 @@ class StreamingVideoProcessor:
             await self._finalize_streaming(session_id, detection_tracker)
 
         except Exception as e:
-            logger.error(f"❌ Error en streaming {session_id}: {str(e)}")
+            logger.error(f"❌ [DEBUG] Error en streaming {session_id}: {str(e)}")
             await self._handle_streaming_error(session_id, str(e))
         finally:
             # Limpiar recursos
@@ -458,6 +501,8 @@ class StreamingVideoProcessor:
             if session and session.video_path:
                 self.file_service.cleanup_temp_file(session.video_path)
 
+            logger.info(f"🧹 [DEBUG] Recursos limpiados para {session_id}")
+
     async def _process_single_frame(
             self,
             session_id: str,
@@ -466,7 +511,7 @@ class StreamingVideoProcessor:
             fps: float,
             processing_params: Dict[str, Any]
     ) -> StreamingFrame:
-        """Procesa un frame individual optimizado para streaming"""
+        """VERSIÓN CORREGIDA - Procesa un frame individual con mejor handling"""
 
         start_time = time.time()
         quality_manager = self.quality_managers[session_id]
@@ -476,6 +521,8 @@ class StreamingVideoProcessor:
             confidence_threshold = processing_params.get("confidence_threshold", 0.3)
             iou_threshold = processing_params.get("iou_threshold", 0.4)
 
+            logger.debug(f"🔍 [DEBUG] Procesando frame {frame_num} con confianza {confidence_threshold}")
+
             # Procesar con el pipeline ALPR
             loop = asyncio.get_event_loop()
             pipeline_result = await loop.run_in_executor(
@@ -483,6 +530,8 @@ class StreamingVideoProcessor:
                 self._process_frame_sync,
                 frame, confidence_threshold, iou_threshold
             )
+
+            logger.debug(f"🔍 [DEBUG] Pipeline resultado: {pipeline_result.get('success', False)}")
 
             # Extraer detecciones
             detections = []
@@ -504,11 +553,16 @@ class StreamingVideoProcessor:
                         }
                         detections.append(detection)
 
+            logger.debug(f"🎯 [DEBUG] Frame {frame_num}: {len(detections)} detecciones extraídas")
+
             # Generar imagen con detecciones para streaming
             frame_base64 = None
             frame_small_base64 = None
+            compressed_size = 0
+            quality_used = quality_manager.current_quality
 
-            if detections or processing_params.get("send_all_frames", False):
+            # SIEMPRE crear frame, incluso sin detecciones, cada cierto número de frames
+            if detections or frame_num % 15 == 0:  # Enviar frame cada 15 frames o si hay detecciones
                 # Crear frame con detecciones dibujadas
                 annotated_frame = self._draw_detections_on_frame(frame, detections)
 
@@ -523,6 +577,9 @@ class StreamingVideoProcessor:
                 # Actualizar calidad adaptativa
                 processing_time = time.time() - start_time
                 quality_manager.adjust_quality(processing_time, compressed_size or 0)
+
+                logger.debug(
+                    f"🖼️ [DEBUG] Frame {frame_num} codificado - Tamaño: {compressed_size}, Calidad: {quality_used}")
 
             processing_time = time.time() - start_time
 
@@ -541,7 +598,7 @@ class StreamingVideoProcessor:
 
         except Exception as e:
             processing_time = time.time() - start_time
-            logger.warning(f"⚠️ Error procesando frame {frame_num}: {str(e)}")
+            logger.warning(f"⚠️ [DEBUG] Error procesando frame {frame_num}: {str(e)}")
 
             return StreamingFrame(
                 frame_num=frame_num,
@@ -721,10 +778,14 @@ class StreamingVideoProcessor:
             streaming_frame: StreamingFrame,
             detection_tracker: StreamingDetectionTracker
     ):
-        """Envía actualización de streaming al cliente"""
+        """VERSIÓN MEJORADA - Envía actualización de streaming al cliente"""
         try:
+            # 🔧 IMPORTAR AQUÍ PARA EVITAR CIRCULAR IMPORTS
+            from api.websocket_manager import connection_manager
+
             session = connection_manager.get_session(session_id)
             if not session:
+                logger.warning(f"⚠️ [DEBUG] Sesión no encontrada para envío: {session_id}")
                 return
 
             # Calcular progreso
@@ -758,7 +819,7 @@ class StreamingVideoProcessor:
                 }
             }
 
-            # Incluir frame si hay detecciones o se solicita
+            # Incluir frame si hay detecciones o cada cierto tiempo
             if streaming_frame.frame_image_base64:
                 update_data["frame_data"] = {
                     "image_base64": streaming_frame.frame_image_base64,
@@ -778,18 +839,27 @@ class StreamingVideoProcessor:
                 }
 
             # Enviar actualización
-            await connection_manager.broadcast_to_session(
+            success = await connection_manager.broadcast_to_session(
                 session_id, "streaming_update", update_data
             )
 
+            if not success:
+                logger.warning(f"⚠️ [DEBUG] No se pudo enviar actualización a {session_id}")
+            else:
+                logger.debug(f"✅ [DEBUG] Actualización enviada exitosamente a {session_id}")
+
         except Exception as e:
-            logger.error(f"❌ Error enviando actualización de streaming: {str(e)}")
+            logger.error(f"❌ [DEBUG] Error enviando actualización de streaming: {str(e)}")
 
     async def _finalize_streaming(self, session_id: str, detection_tracker: StreamingDetectionTracker):
-        """Finaliza el streaming y envía resumen final"""
+        """VERSIÓN MEJORADA - Finaliza el streaming y envía resumen final"""
         try:
+            # 🔧 IMPORTAR AQUÍ PARA EVITAR CIRCULAR IMPORTS
+            from api.websocket_manager import connection_manager
+
             session = connection_manager.get_session(session_id)
             if not session:
+                logger.warning(f"⚠️ [DEBUG] Sesión no encontrada para finalización: {session_id}")
                 return
 
             # Generar resumen final completo
@@ -813,10 +883,12 @@ class StreamingVideoProcessor:
                 "data": final_summary
             })
 
-            logger.success(f"✅ Streaming completado: {session_id}")
+            logger.success(f"✅ [DEBUG] Streaming completado: {session_id} - "
+                           f"Placas: {len(detection_tracker.unique_plates)}, "
+                           f"Frames: {session.processed_frames}")
 
         except Exception as e:
-            logger.error(f"❌ Error finalizando streaming: {str(e)}")
+            logger.error(f"❌ [DEBUG] Error finalizando streaming: {str(e)}")
 
     async def _handle_streaming_error(self, session_id: str, error_message: str):
         """Maneja errores de streaming"""
