@@ -16,7 +16,7 @@ from core.utils import (  # ✅ USA TUS FUNCIONES EXISTENTES
 class ROIProcessor:
     """Procesador de ROI que integra con tu sistema existente"""
 
-    def __init__(self, roi_percentage: float = 10.0):
+    def __init__(self, roi_percentage: float = 80.0):
         """
         Args:
             roi_percentage: Porcentaje del centro de la imagen para ROI
@@ -34,10 +34,6 @@ class ROIProcessor:
         # Calcular tamaño del ROI basado en porcentaje
         roi_width = int(width * (self.roi_percentage / 100))
         roi_height = int(height * (self.roi_percentage / 100))
-
-        # Asegurar dimensiones mínimas
-        roi_width = max(roi_width, 200)  # Mínimo 200px de ancho
-        roi_height = max(roi_height, 150)  # Mínimo 150px de alto
 
         # Centrar el ROI
         x_start = (width - roi_width) // 2

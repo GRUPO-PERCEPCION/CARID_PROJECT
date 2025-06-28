@@ -9,26 +9,37 @@ from config.settings import settings
 
 
 class CharacterRecognizer(BaseModel):
-    """Reconocedor de caracteres en placas vehiculares usando YOLOv8"""
+    """
+    ✅ CORREGIDO: Reconocedor ajustado para modelos que detectan exactamente 6 caracteres SIN guión
+    """
 
     def __init__(self, model_path: Optional[str] = None):
         model_path = model_path or settings.char_model_path
         super().__init__(model_path, "Reconocedor de Caracteres")
 
-        # Configuraciones específicas para reconocimiento de caracteres
-        self.min_char_confidence = 0.3  # Confianza mínima para caracteres
-        self.max_characters = 10  # Máximo número de caracteres por placa
+        # ✅ CONFIGURACIONES AJUSTADAS
+        self.min_char_confidence = 0.4 # Confianza mínima para caracteres
+        self.expected_char_count = 6  # ✅ EXACTAMENTE 6 caracteres esperados
+        self.max_characters = 8  # Máximo por si detecta ruido
 
-        # Patrones de placas peruanas
-        self.plate_patterns = [
-            r'^[A-Z]{3}-\d{3}$',  # Formato actual: ABC-123
-            r'^[A-Z]{2}-\d{4}$',  # Formato anterior: AB-1234
-            r'^[A-Z]\d{2}-\d{3}$',  # Motos: A12-345
-            r'^[A-Z]{3}\d{3}$',  # Sin guión: ABC123
+        # ✅ PATRONES SIN GUIÓN (como detecta el modelo)
+        self.raw_plate_patterns = [
+            r'^[A-Z]{3}\d{3}$',  # ABC123 (nuevo formato sin guión)
+            r'^[A-Z]{2}\d{4}$',  # AB1234 (formato anterior sin guión)
         ]
 
+        # Patrones finales CON guión (después de formatear)
+        self.formatted_plate_patterns = [
+            r'^[A-Z]{3}-\d{3}$',  # ABC-123
+            r'^[A-Z]{2}-\d{4}$',  # AB-1234
+        ]
+
+        logger.info("📖 CharacterRecognizer ajustado para 6 caracteres sin guión")
+
     def process_results(self, results: List, original_image: np.ndarray) -> Dict[str, Any]:
-        """Procesa los resultados de reconocimiento de caracteres"""
+        """
+        ✅ CORREGIDO: Procesa resultados esperando exactamente 6 caracteres
+        """
         try:
             # Extraer detecciones de caracteres
             detections = self.extract_bboxes(results)
@@ -39,18 +50,28 @@ class CharacterRecognizer(BaseModel):
             # Ordenar caracteres de izquierda a derecha
             sorted_chars = self._sort_characters_left_to_right(valid_chars)
 
-            # Construir texto de la placa
-            plate_text = self._build_plate_text(sorted_chars)
+            # ✅ CONSTRUIR TEXTO SIN GUIÓN (como sale del modelo)
+            raw_plate_text = self._build_raw_plate_text(sorted_chars)
 
-            # Validar formato de placa
-            is_valid_format = self._validate_plate_format(plate_text)
+            # ✅ VALIDAR que tengamos exactamente 6 caracteres
+            is_six_chars = len(raw_plate_text.replace(' ', '')) == 6
+
+            # ✅ VALIDAR formato de placa (sin guión)
+            is_valid_raw_format = self._validate_raw_plate_format(raw_plate_text)
+
+            # ✅ FORMATEAR con guión automáticamente si es válido
+            formatted_plate_text = ""
+            if is_valid_raw_format:
+                formatted_plate_text = self._add_dash_to_plate(raw_plate_text)
 
             # Preparar resultado
             result = {
-                "success": len(sorted_chars) > 0,
+                "success": len(sorted_chars) > 0 and is_six_chars,
                 "characters_detected": len(sorted_chars),
-                "plate_text": plate_text,
-                "is_valid_format": is_valid_format,
+                "plate_text": raw_plate_text,  # ✅ SIN guión (como detecta el modelo)
+                "formatted_plate_text": formatted_plate_text,  # ✅ CON guión (para mostrar)
+                "is_valid_format": is_valid_raw_format,
+                "is_six_chars": is_six_chars,  # ✅ NUEVO
                 "characters": sorted_chars,
                 "confidence": self._calculate_overall_confidence(sorted_chars),
                 "image_shape": {
@@ -61,11 +82,20 @@ class CharacterRecognizer(BaseModel):
                 "processing_info": {
                     "total_detections": len(detections),
                     "valid_characters": len(valid_chars),
-                    "min_confidence_threshold": self.min_char_confidence
+                    "expected_char_count": self.expected_char_count,  # ✅ NUEVO
+                    "min_confidence_threshold": self.min_char_confidence,
+                    "model_detects_dash": False,  # ✅ NUEVO
+                    "auto_dash_formatting": True  # ✅ NUEVO
                 }
             }
 
-            logger.info(f"📖 Texto reconocido: '{plate_text}' ({'Válido' if is_valid_format else 'Inválido'})")
+            if raw_plate_text:
+                status = "✅ Válido" if is_valid_raw_format else "❌ Inválido"
+                logger.info(f"📖 Texto reconocido: '{raw_plate_text}' {status} "
+                            f"({len(raw_plate_text)} chars)")
+                if formatted_plate_text:
+                    logger.info(f"🔧 Texto formateado: '{formatted_plate_text}'")
+
             return result
 
         except Exception as e:
@@ -74,14 +104,18 @@ class CharacterRecognizer(BaseModel):
                 "success": False,
                 "characters_detected": 0,
                 "plate_text": "",
+                "formatted_plate_text": "",
                 "is_valid_format": False,
+                "is_six_chars": False,
                 "characters": [],
                 "confidence": 0.0,
                 "error": str(e)
             }
 
     def _filter_valid_characters(self, detections: List[Dict]) -> List[Dict[str, Any]]:
-        """Filtra detecciones para obtener solo caracteres válidos"""
+        """
+        ✅ AJUSTADO: Filtra para obtener solo caracteres alfanuméricos
+        """
         valid_chars = []
 
         for detection in detections:
@@ -89,16 +123,16 @@ class CharacterRecognizer(BaseModel):
             if detection["confidence"] < self.min_char_confidence:
                 continue
 
-            # Verificar que el nombre de clase sea un carácter válido
+            # ✅ VERIFICAR que sea SOLO alfanumérico (sin guiones ni símbolos)
             char_name = detection["class_name"]
-            if not self._is_valid_character(char_name):
+            if not self._is_valid_alphanumeric_character(char_name):
                 continue
 
             # Agregar información adicional
             bbox = detection["bbox"]
             enhanced_char = {
                 **detection,
-                "character": char_name,
+                "character": char_name.upper(),  # ✅ ASEGURAR MAYÚSCULAS
                 "center_x": (bbox[0] + bbox[2]) / 2,
                 "center_y": (bbox[1] + bbox[3]) / 2,
                 "width": abs(bbox[2] - bbox[0]),
@@ -109,80 +143,75 @@ class CharacterRecognizer(BaseModel):
 
         return valid_chars
 
-    def _is_valid_character(self, char_name: str) -> bool:
-        """Verifica si el carácter es válido para placas peruanas"""
-        # Letras válidas: A-Z
-        # Números válidos: 0-9
-        # Caracteres especiales: - (guión)
-
+    def _is_valid_alphanumeric_character(self, char_name: str) -> bool:
+        """
+        ✅ NUEVO: Verifica que sea SOLO alfanumérico (A-Z, 0-9)
+        El modelo NO debe detectar guiones
+        """
         if len(char_name) != 1:
-            return char_name in ['-', 'dash', 'hyphen']
+            return False
 
+        # ✅ SOLO letras mayúsculas y números
         return char_name.isalnum() and (char_name.isdigit() or char_name.isupper())
 
     def _sort_characters_left_to_right(self, characters: List[Dict]) -> List[Dict]:
         """Ordena los caracteres de izquierda a derecha basado en center_x"""
         return sorted(characters, key=lambda x: x["center_x"])
 
-    def _build_plate_text(self, sorted_chars: List[Dict]) -> str:
-        """Construye el texto de la placa a partir de caracteres ordenados"""
+    def _build_raw_plate_text(self, sorted_chars: List[Dict]) -> str:
+        """
+        ✅ NUEVO: Construye texto SIN guión (como detecta el modelo)
+        """
         if not sorted_chars:
             return ""
 
-        # Extraer caracteres
-        chars = [char["character"] for char in sorted_chars]
+        # ✅ EXTRAER SOLO caracteres alfanuméricos
+        chars = []
+        for char in sorted_chars:
+            character = char["character"].upper()
+            if character.isalnum():  # Solo A-Z y 0-9
+                chars.append(character)
 
-        # Limpiar caracteres especiales
-        cleaned_chars = []
-        for char in chars:
-            if char in ['-', 'dash', 'hyphen']:
-                cleaned_chars.append('-')
-            else:
-                cleaned_chars.append(char.upper())
+        # ✅ VERIFICAR que tengamos exactamente 6 caracteres
+        raw_text = ''.join(chars)
 
-        # Construir texto base
-        base_text = ''.join(cleaned_chars)
+        if len(raw_text) == self.expected_char_count:
+            logger.debug(f"✅ Texto construido: '{raw_text}' ({len(raw_text)} chars)")
+            return raw_text
+        else:
+            logger.warning(
+                f"⚠️ Cantidad incorrecta de caracteres: {len(raw_text)}, esperados: {self.expected_char_count}")
+            return raw_text  # Devolver anyway para debugging
 
-        # Intentar formatear según patrones peruanos
-        formatted_text = self._format_peruvian_plate(base_text)
+    def _add_dash_to_plate(self, raw_text: str) -> str:
+        """
+        ✅ NUEVO: Agrega guión automáticamente según patrones peruanos
+        """
+        if len(raw_text) != 6:
+            return raw_text
 
-        return formatted_text
+        # ABC123 -> ABC-123 (3 letras + 3 números)
+        if raw_text[:3].isalpha() and raw_text[3:].isdigit():
+            return f"{raw_text[:3]}-{raw_text[3:]}"
 
-    def _format_peruvian_plate(self, text: str) -> str:
-        """Intenta formatear el texto según los patrones de placas peruanas"""
-        # Remover caracteres no válidos
-        clean_text = re.sub(r'[^A-Z0-9]', '', text.upper())
+        # AB1234 -> AB-1234 (2 letras + 4 números)
+        elif raw_text[:2].isalpha() and raw_text[2:].isdigit():
+            return f"{raw_text[:2]}-{raw_text[2:]}"
 
-        if len(clean_text) < 5:
-            return text  # Muy corto, retornar original
+        # Si no coincide con patrones conocidos, devolver sin guión
+        else:
+            logger.warning(f"⚠️ Patrón no reconocido para agregar guión: {raw_text}")
+            return raw_text
 
-        # Patrones comunes
-        if len(clean_text) == 6:
-            # Formato ABC123 -> ABC-123
-            if clean_text[:3].isalpha() and clean_text[3:].isdigit():
-                return f"{clean_text[:3]}-{clean_text[3:]}"
-            # Formato AB1234 -> AB-1234
-            elif clean_text[:2].isalpha() and clean_text[2:].isdigit():
-                return f"{clean_text[:2]}-{clean_text[2:]}"
-
-        elif len(clean_text) == 5:
-            # Formato A1234 -> A12-345 (motos)
-            if clean_text[0].isalpha() and clean_text[1:].isdigit():
-                return f"{clean_text[:3]}-{clean_text[3:]}"
-
-        # Si ya tiene el formato correcto, mantenerlo
-        for pattern in self.plate_patterns:
-            if re.match(pattern, text):
-                return text
-
-        return text  # Retornar original si no se puede formatear
-
-    def _validate_plate_format(self, plate_text: str) -> bool:
-        """Valida si el texto coincide con algún patrón de placa peruana"""
-        if not plate_text:
+    def _validate_raw_plate_format(self, plate_text: str) -> bool:
+        """
+        ✅ NUEVO: Valida formato de placa SIN guión (como detecta el modelo)
+        """
+        if not plate_text or len(plate_text) != 6:
             return False
 
-        for pattern in self.plate_patterns:
+        # ✅ VERIFICAR patrones sin guión
+        for pattern in self.raw_plate_patterns:
             if re.match(pattern, plate_text):
                 return True
 
@@ -210,21 +239,14 @@ class CharacterRecognizer(BaseModel):
 
     def recognize_characters(self, image_input, **kwargs) -> Dict[str, Any]:
         """
-        Reconoce caracteres en una imagen de placa
-
-        Args:
-            image_input: Puede ser path de imagen (str) o numpy array
-            **kwargs: Parámetros adicionales para la predicción
-
-        Returns:
-            Dict con resultados de reconocimiento
+        ✅ AJUSTADO: Reconoce caracteres esperando exactamente 6 sin guión
         """
         try:
             # Preprocesar imagen
             image = self.preprocess_image(image_input)
 
             # Realizar predicción
-            logger.info("📖 Reconociendo caracteres...")
+            logger.debug("📖 Reconociendo caracteres (esperando 6 sin guión)...")
             results = self.predict(image, **kwargs)
 
             # Procesar resultados
@@ -238,7 +260,9 @@ class CharacterRecognizer(BaseModel):
                 "success": False,
                 "characters_detected": 0,
                 "plate_text": "",
+                "formatted_plate_text": "",
                 "is_valid_format": False,
+                "is_six_chars": False,
                 "characters": [],
                 "confidence": 0.0,
                 "error": str(e)
@@ -247,9 +271,6 @@ class CharacterRecognizer(BaseModel):
     def get_character_details(self, image_input, **kwargs) -> List[Dict[str, Any]]:
         """
         Obtiene detalles de todos los caracteres detectados
-
-        Returns:
-            Lista con información detallada de cada carácter
         """
         try:
             result = self.recognize_characters(image_input, **kwargs)
@@ -270,7 +291,7 @@ class CharacterRecognizer(BaseModel):
                     "validation": {
                         "is_letter": char["character"].isalpha(),
                         "is_digit": char["character"].isdigit(),
-                        "is_valid_for_peru": self._is_valid_character(char["character"])
+                        "is_valid_alphanumeric": self._is_valid_alphanumeric_character(char["character"])
                     }
                 }
                 detailed_chars.append(detailed_char)
@@ -283,10 +304,7 @@ class CharacterRecognizer(BaseModel):
 
     def visualize_characters(self, image_input, **kwargs) -> np.ndarray:
         """
-        Crea una imagen con los caracteres reconocidos visualizados
-
-        Returns:
-            Imagen con bounding boxes y texto de caracteres
+        ✅ ACTUALIZADO: Visualización con información de 6 caracteres
         """
         try:
             # Reconocer caracteres
@@ -314,7 +332,7 @@ class CharacterRecognizer(BaseModel):
                 elif character.isdigit():
                     color = (255, 0, 0)  # Rojo para números
                 else:
-                    color = (0, 0, 255)  # Azul para símbolos
+                    color = (0, 0, 255)  # Azul para otros
 
                 # Dibujar rectángulo
                 cv2.rectangle(result_image, (x1, y1), (x2, y2), color, 2)
@@ -354,14 +372,21 @@ class CharacterRecognizer(BaseModel):
                     2
                 )
 
-            # Agregar texto completo en la parte superior
+            # ✅ AGREGAR INFORMACIÓN MEJORADA en la parte superior
             if result["plate_text"]:
-                plate_text = result["plate_text"]
+                raw_text = result["plate_text"]
+                formatted_text = result.get("formatted_plate_text", "")
                 confidence = result["confidence"]
+                is_six_chars = result["is_six_chars"]
 
-                # Fondo para texto principal
-                text = f"PLACA: {plate_text} (Conf: {confidence:.2f})"
-                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
+                # Texto principal
+                main_text = f"RAW: {raw_text} (6chars: {'✅' if is_six_chars else '❌'})"
+                if formatted_text and formatted_text != raw_text:
+                    main_text += f" -> {formatted_text}"
+
+                main_text += f" (Conf: {confidence:.2f})"
+
+                text_size = cv2.getTextSize(main_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
 
                 cv2.rectangle(
                     result_image,
@@ -372,14 +397,14 @@ class CharacterRecognizer(BaseModel):
                 )
 
                 # Color del texto según validez
-                text_color = (0, 255, 0) if result["is_valid_format"] else (0, 255, 255)
+                text_color = (0, 255, 0) if result["is_valid_format"] and is_six_chars else (0, 255, 255)
 
                 cv2.putText(
                     result_image,
-                    text,
+                    main_text,
                     (15, text_size[1] + 15),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
+                    0.7,
                     text_color,
                     2
                 )
@@ -393,12 +418,6 @@ class CharacterRecognizer(BaseModel):
     def enhance_image_for_recognition(self, image: np.ndarray) -> np.ndarray:
         """
         Mejora la imagen para un mejor reconocimiento de caracteres
-
-        Args:
-            image: Imagen de entrada (numpy array)
-
-        Returns:
-            Imagen mejorada
         """
         try:
             # Convertir a escala de grises si es necesario
@@ -435,13 +454,7 @@ class CharacterRecognizer(BaseModel):
 
     def post_process_text(self, plate_text: str) -> str:
         """
-        Post-procesa el texto reconocido para corregir errores comunes
-
-        Args:
-            plate_text: Texto de placa reconocido
-
-        Returns:
-            Texto corregido
+        ✅ ACTUALIZADO: Post-procesa el texto para corregir errores comunes
         """
         if not plate_text:
             return plate_text
@@ -458,13 +471,26 @@ class CharacterRecognizer(BaseModel):
             'B': '8',  # En contexto de números
         }
 
-        # Aplicar correcciones basadas en posición
-        corrected = plate_text
+        # ✅ REMOVER cualquier carácter no alfanumérico
+        corrected = re.sub(r'[^A-Z0-9]', '', plate_text.upper())
 
-        # Lógica específica para placas peruanas
-        # Formato ABC-123: las primeras 3 deben ser letras, las últimas 3 números
-
-        # Remover espacios y caracteres extraños
-        corrected = re.sub(r'[^A-Z0-9\-]', '', corrected.upper())
+        # ✅ APLICAR correcciones basadas en posición para placas de 6 caracteres
+        if len(corrected) == 6:
+            # Formato ABC123: las primeras 3 deben ser letras, las últimas 3 números
+            if corrected[:3].isalnum() and corrected[3:].isalnum():
+                # Corregir letras en posiciones de números y viceversa
+                result = ""
+                for i, char in enumerate(corrected):
+                    if i < 3:  # Posiciones de letras
+                        if char.isdigit() and char in corrections:
+                            result += corrections[char]
+                        else:
+                            result += char
+                    else:  # Posiciones de números
+                        if char.isalpha() and char in corrections:
+                            result += corrections[char]
+                        else:
+                            result += char
+                corrected = result
 
         return corrected

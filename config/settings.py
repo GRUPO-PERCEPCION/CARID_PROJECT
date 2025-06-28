@@ -26,8 +26,8 @@ class Settings(BaseSettings):
     # Configuración de modelos
     plate_model_path: str = Field(default="./models_trained/plate_detection.pt", env="PLATE_MODEL_PATH")
     char_model_path: str = Field(default="./models_trained/char_recognition.pt", env="CHAR_MODEL_PATH")
-    model_confidence_threshold: float = Field(default=0.5, env="MODEL_CONFIDENCE_THRESHOLD")
-    model_iou_threshold: float = Field(default=0.4, env="MODEL_IOU_THRESHOLD")
+    model_confidence_threshold: float = Field(default=0.7, env="MODEL_CONFIDENCE_THRESHOLD")
+    model_iou_threshold: float = Field(default=0.5, env="MODEL_IOU_THRESHOLD")
 
     # Configuración CUDA/GPU
     use_gpu: bool = Field(default=True, env="USE_GPU")

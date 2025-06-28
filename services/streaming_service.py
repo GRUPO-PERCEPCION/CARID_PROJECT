@@ -33,10 +33,11 @@ class StreamingFrame:
     original_size: Optional[Tuple[int, int]] = None
     compressed_size: Optional[int] = None
     quality_used: Optional[int] = None
-    # ✅ NUEVOS CAMPOS
+    # ✅ CAMPOS ACTUALIZADOS
     roi_used: bool = False
     six_char_filter_applied: bool = False
     six_char_detections_count: int = 0
+    auto_formatted_count: int = 0  # ✅ NUEVO
 
 
 class AdaptiveQualityManager:
@@ -67,7 +68,7 @@ class AdaptiveQualityManager:
 
 
 class StreamingDetectionTracker:
-    """Tracker de detecciones para streaming con soporte para 6 caracteres"""
+    """Tracker de detecciones para streaming con soporte para 6 caracteres SIN guión"""
 
     def __init__(self, session_id: str):
         self.session_id = session_id
@@ -75,36 +76,46 @@ class StreamingDetectionTracker:
         self.detection_timeline: List[Dict[str, Any]] = []
         self.frame_detections: Dict[int, List[Dict[str, Any]]] = {}
         self.best_detection_per_plate: Dict[str, Dict[str, Any]] = {}
-        # ✅ NUEVOS CONTADORES
+        # ✅ CONTADORES ACTUALIZADOS
         self.six_char_plates: Dict[str, Dict[str, Any]] = {}
         self.total_six_char_detections = 0
+        self.total_auto_formatted_detections = 0  # ✅ NUEVO
 
     def add_frame_detections(self, frame_num: int, detections: List[Dict[str, Any]], timestamp: float):
-        """Agrega detecciones de un frame específico con soporte para 6 caracteres"""
+        """✅ ACTUALIZADO: Agrega detecciones con soporte para 6 caracteres SIN guión"""
         self.frame_detections[frame_num] = detections
 
         for detection in detections:
-            plate_text = detection["plate_text"]
-            confidence = detection["overall_confidence"]
-            is_six_char = detection.get("six_char_validated", False)  # ✅ NUEVO
+            # ✅ USAR TEXTO FORMATEADO COMO CLAVE PRINCIPAL
+            formatted_text = detection.get("plate_text", "")  # Con guión
+            raw_text = detection.get("raw_plate_text", "")  # Sin guión
+            confidence = detection.get("overall_confidence", 0.0)
+            is_six_char = detection.get("six_char_validated", False)
+            auto_formatted = detection.get("auto_formatted", False)
 
-            # Contar detecciones de 6 caracteres
+            # Usar texto formateado como clave principal
+            plate_key = formatted_text if formatted_text else raw_text
+
+            # Contar detecciones especiales
             if is_six_char:
                 self.total_six_char_detections += 1
+            if auto_formatted:
+                self.total_auto_formatted_detections += 1
 
             # Agregar al timeline
             timeline_entry = {
                 **detection,
                 "frame_num": frame_num,
                 "timestamp": timestamp,
-                "detection_id": f"{frame_num}_{plate_text}_{int(time.time() * 1000)}"
+                "detection_id": f"{frame_num}_{plate_key}_{int(time.time() * 1000)}"
             }
             self.detection_timeline.append(timeline_entry)
 
             # Actualizar o crear entrada de placa única
-            if plate_text not in self.unique_plates:
-                self.unique_plates[plate_text] = {
-                    "plate_text": plate_text,
+            if plate_key not in self.unique_plates:
+                self.unique_plates[plate_key] = {
+                    "plate_text": formatted_text,  # ✅ CON GUIÓN
+                    "raw_plate_text": raw_text,  # ✅ SIN GUIÓN
                     "first_seen_frame": frame_num,
                     "first_seen_timestamp": timestamp,
                     "last_seen_frame": frame_num,
@@ -116,36 +127,42 @@ class StreamingDetectionTracker:
                     "avg_confidence": 0.0,
                     "total_confidence": 0.0,
                     "is_valid_format": detection.get("is_valid_plate", False),
-                    "is_six_char_valid": False,  # ✅ NUEVO
-                    "six_char_detection_count": 0,  # ✅ NUEVO
+                    "is_six_char_valid": False,  # ✅ ACTUALIZADO
+                    "auto_formatted": False,  # ✅ NUEVO
+                    "six_char_detection_count": 0,
+                    "auto_formatted_detection_count": 0,  # ✅ NUEVO
                     "frame_history": [],
                     "confidence_trend": [],
                     "status": "active"
                 }
 
             # Actualizar estadísticas
-            plate_data = self.unique_plates[plate_text]
+            plate_data = self.unique_plates[plate_key]
             plate_data["detection_count"] += 1
             plate_data["last_seen_frame"] = frame_num
             plate_data["last_seen_timestamp"] = timestamp
             plate_data["total_confidence"] += confidence
             plate_data["avg_confidence"] = plate_data["total_confidence"] / plate_data["detection_count"]
 
-            # ✅ ACTUALIZAR ESTADÍSTICAS DE 6 CARACTERES
+            # ✅ ACTUALIZAR ESTADÍSTICAS ESPECÍFICAS
             if is_six_char:
                 plate_data["is_six_char_valid"] = True
                 plate_data["six_char_detection_count"] += 1
 
                 # Agregar a placas de 6 caracteres
-                if plate_text not in self.six_char_plates:
-                    self.six_char_plates[plate_text] = plate_data
+                if plate_key not in self.six_char_plates:
+                    self.six_char_plates[plate_key] = plate_data
+
+            if auto_formatted:
+                plate_data["auto_formatted"] = True
+                plate_data["auto_formatted_detection_count"] += 1
 
             # Actualizar mejor detección
             if confidence > plate_data["best_confidence"]:
                 plate_data["best_confidence"] = confidence
                 plate_data["best_frame"] = frame_num
                 plate_data["best_timestamp"] = timestamp
-                self.best_detection_per_plate[plate_text] = detection
+                self.best_detection_per_plate[plate_key] = detection
 
             # Agregar a historial (mantener últimos 20)
             plate_data["frame_history"].append(frame_num)
@@ -155,35 +172,39 @@ class StreamingDetectionTracker:
                 plate_data["confidence_trend"] = plate_data["confidence_trend"][-20:]
 
     def get_streaming_summary(self) -> Dict[str, Any]:
-        """Genera resumen optimizado para streaming con información de 6 caracteres"""
+        """✅ ACTUALIZADO: Genera resumen con información de 6 caracteres y auto-formateo"""
         sorted_plates = sorted(
             self.unique_plates.values(),
-            key=lambda p: (p.get("is_six_char_valid", False), p["best_confidence"]),  # ✅ PRIORIZAR 6 CHARS
+            key=lambda p: (p.get("is_six_char_valid", False), p.get("auto_formatted", False), p["best_confidence"]),
             reverse=True
         )
 
         total_detections = len(self.detection_timeline)
         valid_plates = [p for p in sorted_plates if p["is_valid_format"]]
-        six_char_plates = [p for p in sorted_plates if p.get("is_six_char_valid", False)]  # ✅ NUEVO
+        six_char_plates = [p for p in sorted_plates if p.get("is_six_char_valid", False)]
+        auto_formatted_plates = [p for p in sorted_plates if p.get("auto_formatted", False)]
         frames_with_detections = len(self.frame_detections)
 
         return {
             "total_detections": total_detections,
             "unique_plates_count": len(self.unique_plates),
             "valid_plates_count": len(valid_plates),
-            "six_char_plates_count": len(six_char_plates),  # ✅ NUEVO
+            "six_char_plates_count": len(six_char_plates),
+            "auto_formatted_plates_count": len(auto_formatted_plates),  # ✅ NUEVO
             "frames_with_detections": frames_with_detections,
             "best_plates": sorted_plates[:5],
-            "best_six_char_plates": six_char_plates[:3],  # ✅ NUEVO
+            "best_six_char_plates": six_char_plates[:3],
+            "best_auto_formatted_plates": auto_formatted_plates[:3],  # ✅ NUEVO
             "latest_detections": self.detection_timeline[-10:],
             "detection_density": frames_with_detections / max(len(self.frame_detections), 1),
-            "six_char_detection_rate": self.total_six_char_detections / max(total_detections, 1),  # ✅ NUEVO
+            "six_char_detection_rate": self.total_six_char_detections / max(total_detections, 1),
+            "auto_formatted_rate": self.total_auto_formatted_detections / max(total_detections, 1),  # ✅ NUEVO
             "session_id": self.session_id
         }
 
 
 class StreamingVideoProcessor:
-    """Procesador principal de video con ROI central y filtro de 6 caracteres"""
+    """Procesador principal de video con ROI central y filtro de 6 caracteres SIN guión"""
 
     def __init__(self):
         self.model_manager = model_manager
@@ -194,7 +215,7 @@ class StreamingVideoProcessor:
         self.detection_trackers: Dict[str, StreamingDetectionTracker] = {}
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="streaming_processor")
         self.streaming_config = settings.get_streaming_config()
-        logger.info("🎬 StreamingVideoProcessor inicializado con ROI central y filtro de 6 caracteres")
+        logger.info("🎬 StreamingVideoProcessor inicializado para modelos de 6 caracteres SIN guión")
 
     async def start_video_streaming(
             self,
@@ -203,7 +224,7 @@ class StreamingVideoProcessor:
             file_info: Dict[str, Any],
             processing_params: Dict[str, Any]
     ) -> bool:
-        """Inicia el streaming con ROI central y filtro de 6 caracteres"""
+        """Inicia el streaming con ROI central y filtro de 6 caracteres SIN guión"""
         try:
             logger.info(f"🎬 [STREAMING] Iniciando para sesión: {session_id}")
             logger.info(f"📹 [STREAMING] Video: {video_path}")
@@ -264,15 +285,17 @@ class StreamingVideoProcessor:
             await session.send_message({
                 "type": "streaming_started",
                 "data": {
-                    "message": "Streaming iniciado con ROI central y filtro de 6 caracteres",
+                    "message": "Streaming iniciado con ROI central y filtro de 6 caracteres SIN guión",
                     "video_info": video_info,
                     "file_info": file_info,
                     "processing_params": processing_params,
                     "streaming_config": self.streaming_config,
-                    "enhancement_info": {  # ✅ NUEVO
+                    "enhancement_info": {  # ✅ ACTUALIZADO
                         "roi_enabled": True,
                         "six_char_filter": True,
-                        "roi_percentage": 10.0
+                        "roi_percentage": 10.0,
+                        "model_expects_dash": False,
+                        "auto_dash_formatting": True
                     },
                     "estimated_duration": self._estimate_processing_time(video_info, processing_params)
                 }
@@ -294,9 +317,9 @@ class StreamingVideoProcessor:
             return False
 
     async def _process_video_stream_enhanced(self, session_id: str):
-        """✅ NUEVO: Procesa el video con ROI central y filtro de 6 caracteres"""
+        """✅ ACTUALIZADO: Procesa el video con ROI central y filtro de 6 caracteres SIN guión"""
 
-        logger.info(f"🎬 [PROCESS] Iniciando procesamiento mejorado para {session_id}")
+        logger.info(f"🎬 [PROCESS] Iniciando procesamiento para modelos de 6 caracteres SIN guión: {session_id}")
 
         try:
             # Importar get_session del routing
@@ -321,10 +344,11 @@ class StreamingVideoProcessor:
             # Configuración de procesamiento
             frame_skip = processing_params.get("frame_skip", 2)
             max_duration = processing_params.get("max_duration", 600)
-            confidence_threshold = processing_params.get("confidence_threshold", 0.3)
+            confidence_threshold = processing_params.get("confidence_threshold", 0.2)  # ✅ MÁS PERMISIVO
 
-            logger.info(
-                f"⚙️ [PROCESS] Configuración mejorada: frame_skip={frame_skip}, confidence={confidence_threshold}, ROI=10%, filter_6chars=True")
+            logger.info(f"⚙️ [PROCESS] Configuración para 6chars SIN guión: "
+                        f"frame_skip={frame_skip}, confidence={confidence_threshold}, "
+                        f"ROI=10%, filter_6chars=True, auto_dash=True")
 
             # Abrir video con verificación
             cap = cv2.VideoCapture(video_path)
@@ -348,13 +372,14 @@ class StreamingVideoProcessor:
             send_interval = 2.0
             error_count = 0
             max_errors = 10
-            six_char_frames = 0  # ✅ CONTADOR NUEVO
+            six_char_frames = 0  # ✅ CONTADOR
+            auto_formatted_frames = 0  # ✅ CONTADOR NUEVO
 
             # Enviar primera actualización
             await self._send_initial_update_enhanced(session_id, total_frames)
 
             # LOOP PRINCIPAL DE PROCESAMIENTO MEJORADO
-            logger.info(f"🔄 [PROCESS] Iniciando loop principal mejorado...")
+            logger.info(f"🔄 [PROCESS] Iniciando loop principal para 6 caracteres SIN guión...")
 
             while True:
                 try:
@@ -386,9 +411,9 @@ class StreamingVideoProcessor:
                             # Convertir a RGB
                             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                            logger.debug(f"🔍 [PROCESS] Procesando frame {frame_num} con ROI+6chars")
+                            logger.debug(f"🔍 [PROCESS] Procesando frame {frame_num} con ROI+6chars SIN guión")
 
-                            # ✅ PROCESAR FRAME CON MEJORAS
+                            # ✅ PROCESAR FRAME CON MEJORAS PARA 6 CARACTERES SIN GUIÓN
                             streaming_frame = await asyncio.wait_for(
                                 self._process_single_frame_enhanced_safe(
                                     session_id, frame_rgb, frame_num, fps, processing_params
@@ -405,15 +430,19 @@ class StreamingVideoProcessor:
                                 elapsed = time.time() - session.start_time
                                 session.processing_speed = processed_count / max(elapsed, 1)
 
-                            # ✅ PROCESAR DETECCIONES CON INFORMACIÓN DE 6 CARACTERES
+                            # ✅ PROCESAR DETECCIONES CON INFORMACIÓN DE 6 CARACTERES SIN GUIÓN
                             if streaming_frame.detections:
                                 session.frames_with_detections += 1
                                 session.total_detection_count += len(streaming_frame.detections)
 
-                                # Contar detecciones de 6 caracteres
+                                # Contar detecciones especiales
                                 six_char_count = streaming_frame.six_char_detections_count
+                                auto_formatted_count = streaming_frame.auto_formatted_count
+
                                 if six_char_count > 0:
                                     six_char_frames += 1
+                                if auto_formatted_count > 0:
+                                    auto_formatted_frames += 1
 
                                 detection_tracker.add_frame_detections(
                                     frame_num, streaming_frame.detections, streaming_frame.timestamp
@@ -422,20 +451,21 @@ class StreamingVideoProcessor:
                                 # Actualizar placas únicas en la sesión
                                 session.unique_plates = detection_tracker.unique_plates
 
-                                # Actualizar mejor detección (priorizar 6 caracteres)
+                                # Actualizar mejor detección (priorizar 6 caracteres y auto-formateadas)
                                 if detection_tracker.best_detection_per_plate:
-                                    # Priorizar detecciones de 6 caracteres
-                                    six_char_detections = {
+                                    # Priorizar detecciones de 6 caracteres y auto-formateadas
+                                    priority_detections = {
                                         k: v for k, v in detection_tracker.best_detection_per_plate.items()
-                                        if v.get("six_char_validated", False)
+                                        if v.get("six_char_validated", False) and v.get("auto_formatted", False)
                                     }
 
-                                    if six_char_detections:
+                                    if priority_detections:
                                         best_overall = max(
-                                            six_char_detections.values(),
+                                            priority_detections.values(),
                                             key=lambda x: x["overall_confidence"]
                                         )
                                     else:
+                                        # Fallback a cualquier detección válida
                                         best_overall = max(
                                             detection_tracker.best_detection_per_plate.values(),
                                             key=lambda x: x["overall_confidence"]
@@ -445,7 +475,7 @@ class StreamingVideoProcessor:
 
                                 logger.info(
                                     f"🎯 [PROCESS] Frame {frame_num}: {len(streaming_frame.detections)} detecciones "
-                                    f"({six_char_count} con 6 chars)")
+                                    f"({six_char_count} 6chars, {auto_formatted_count} auto-format)")
 
                             # Enviar datos si es momento adecuado
                             current_time = time.time()
@@ -459,7 +489,7 @@ class StreamingVideoProcessor:
                                 await self._send_streaming_update_enhanced(session_id, streaming_frame,
                                                                            detection_tracker)
                                 last_send_time = current_time
-                                logger.debug(f"📤 [PROCESS] Actualización mejorada enviada para frame {frame_num}")
+                                logger.debug(f"📤 [PROCESS] Actualización enviada para frame {frame_num}")
 
                             # Reset error count en caso de éxito
                             error_count = 0
@@ -488,11 +518,14 @@ class StreamingVideoProcessor:
                     # Log de progreso cada 100 frames
                     if frame_num % 100 == 0:
                         progress = (frame_num / total_frames) * 100
-                        six_char_count = len(
-                            [p for p in detection_tracker.unique_plates.values() if p.get("is_six_char_valid", False)])
+                        six_char_count = len([p for p in detection_tracker.unique_plates.values()
+                                              if p.get("is_six_char_valid", False)])
+                        auto_formatted_count = len([p for p in detection_tracker.unique_plates.values()
+                                                    if p.get("auto_formatted", False)])
+
                         logger.info(f"📊 [PROCESS] Progreso {session_id}: {progress:.1f}% - "
                                     f"Placas únicas: {len(detection_tracker.unique_plates)} "
-                                    f"(6 chars: {six_char_count})")
+                                    f"(6chars: {six_char_count}, auto: {auto_formatted_count})")
 
                 except Exception as frame_error:
                     error_count += 1
@@ -513,7 +546,7 @@ class StreamingVideoProcessor:
             await self._finalize_streaming_enhanced(session_id, detection_tracker)
 
         except Exception as e:
-            logger.error(f"❌ [PROCESS] Error en streaming mejorado {session_id}: {str(e)}")
+            logger.error(f"❌ [PROCESS] Error en streaming de 6 caracteres SIN guión {session_id}: {str(e)}")
             logger.exception("Stack trace completo:")
             await self._handle_streaming_error(session_id, str(e))
         finally:
@@ -540,13 +573,13 @@ class StreamingVideoProcessor:
             fps: float,
             processing_params: Dict[str, Any]
     ) -> StreamingFrame:
-        """✅ NUEVO: Procesa un frame con ROI central y filtro de 6 caracteres"""
+        """✅ ACTUALIZADO: Procesa un frame con ROI central y filtro de 6 caracteres SIN guión"""
 
         start_time = time.time()
         quality_manager = self.quality_managers[session_id]
 
         try:
-            confidence_threshold = processing_params.get("confidence_threshold", 0.3)
+            confidence_threshold = processing_params.get("confidence_threshold", 0.25)  # ✅ MÁS PERMISIVO
             iou_threshold = processing_params.get("iou_threshold", 0.4)
 
             # Verificar que el frame es válido
@@ -564,36 +597,52 @@ class StreamingVideoProcessor:
             # Extraer detecciones con validación mejorada
             detections = []
             six_char_count = 0
+            auto_formatted_count = 0
 
             if pipeline_result.get("success") and pipeline_result.get("final_results"):
                 for i, plate_result in enumerate(pipeline_result["final_results"]):
                     try:
-                        if plate_result.get("plate_text"):
+                        # ✅ USAR TEXTO FORMATEADO (con guión) y raw (sin guión)
+                        formatted_text = plate_result.get("plate_text", "")
+                        raw_text = plate_result.get("raw_plate_text", "")
+
+                        if formatted_text or raw_text:
                             is_six_char = plate_result.get("six_char_validated", False)
+                            auto_formatted = plate_result.get("auto_formatted", False)
+
                             if is_six_char:
                                 six_char_count += 1
+                            if auto_formatted:
+                                auto_formatted_count += 1
 
                             detection = {
                                 "detection_id": f"{session_id}_{frame_num}_{i}",
                                 "frame_num": frame_num,
                                 "timestamp": frame_num / fps,
-                                "plate_text": str(plate_result["plate_text"]),
+                                "plate_text": formatted_text,  # ✅ TEXTO CON GUIÓN
+                                "raw_plate_text": raw_text,  # ✅ TEXTO SIN GUIÓN (como detecta el modelo)
                                 "plate_confidence": float(plate_result.get("plate_confidence", 0.0)),
                                 "char_confidence": float(
                                     plate_result.get("character_recognition", {}).get("confidence", 0.0)),
                                 "overall_confidence": float(plate_result.get("overall_confidence", 0.0)),
                                 "plate_bbox": list(plate_result.get("plate_bbox", [0, 0, 0, 0])),
                                 "is_valid_plate": bool(plate_result.get("is_valid_plate", False)),
-                                "six_char_validated": is_six_char,  # ✅ NUEVO
-                                "validation_info": plate_result.get("validation_info", {}),  # ✅ NUEVO
-                                "char_count": len(str(plate_result["plate_text"]).replace('-', '').replace(' ', '')),
+                                "six_char_validated": is_six_char,  # ✅ CAMPO EXISTENTE
+                                "auto_formatted": auto_formatted,  # ✅ NUEVO
+                                "validation_info": plate_result.get("validation_info", {}),  # ✅ CAMPO EXISTENTE
+                                "char_count": len(raw_text) if raw_text else 0,  # ✅ CONTAR SIN GUIÓN
                                 "bbox_area": self._calculate_bbox_area_safe(
                                     plate_result.get("plate_bbox", [0, 0, 0, 0])),
-                                "processing_method": "roi_enhanced"  # ✅ MARCADOR
+                                "processing_method": "roi_enhanced_6chars_no_dash"  # ✅ MARCADOR ACTUALIZADO
                             }
                             detections.append(detection)
+
+                            logger.debug(f"✅ [FRAME] Placa detectada: '{raw_text}' -> '{formatted_text}' "
+                                         f"(6chars: {is_six_char}, auto: {auto_formatted})")
                     except Exception as det_error:
                         logger.warning(f"⚠️ [FRAME] Error procesando detección {i}: {str(det_error)}")
+            else:
+                logger.debug(f"🔍 [FRAME] Sin resultados válidos en pipeline")
 
             # Generar imagen para streaming (cada 15 frames o si hay detecciones)
             frame_base64 = None
@@ -634,10 +683,11 @@ class StreamingVideoProcessor:
                 compressed_size=compressed_size,
                 quality_used=quality_used,
                 success=True,
-                # ✅ NUEVOS CAMPOS
+                # ✅ CAMPOS ACTUALIZADOS
                 roi_used=True,
                 six_char_filter_applied=True,
-                six_char_detections_count=six_char_count
+                six_char_detections_count=six_char_count,
+                auto_formatted_count=auto_formatted_count  # ✅ NUEVO
             )
 
         except Exception as e:
@@ -653,24 +703,38 @@ class StreamingVideoProcessor:
                 error=str(e),
                 roi_used=True,
                 six_char_filter_applied=True,
-                six_char_detections_count=0
+                six_char_detections_count=0,
+                auto_formatted_count=0
             )
 
     def _process_frame_enhanced_sync_safe(self, frame: np.ndarray, confidence: float, iou: float) -> Dict[str, Any]:
-        """✅ NUEVO: Procesamiento síncrono del frame con ROI y filtro 6 chars"""
+        """✅ CORREGIDO: Procesamiento síncrono del frame con ROI y filtro 6 chars SIN guión"""
         try:
             if not self.model_manager.is_loaded:
                 return {"success": False, "error": "Modelos no cargados"}
 
-            # ✅ USAR PIPELINE MEJORADO CON ROI Y FILTRO 6 CHARS
+            # ✅ USAR PIPELINE MEJORADO CON ROI Y FILTRO 6 CHARS (SIN GUIÓN)
             result = self.enhanced_pipeline.process_with_enhancements(
                 frame,
                 use_roi=True,  # ✅ ACTIVAR ROI CENTRAL
-                filter_six_chars=True,  # ✅ ACTIVAR FILTRO 6 CHARS
+                filter_six_chars=True,  # ✅ ACTIVAR FILTRO 6 CHARS SIN GUIÓN
                 return_stats=False,
                 conf=confidence,
                 iou=iou
             )
+
+            # ✅ LOG DETALLADO para debugging
+            if result.get("success") and result.get("final_results"):
+                logger.debug(f"🔍 [SYNC] Frame procesado: {len(result['final_results'])} placas detectadas")
+                for i, plate in enumerate(result["final_results"]):
+                    raw_text = plate.get("raw_plate_text", "")
+                    formatted_text = plate.get("plate_text", "")
+                    confidence = plate.get("overall_confidence", 0.0)
+                    auto_formatted = plate.get("auto_formatted", False)
+                    logger.debug(f"  Placa {i + 1}: '{raw_text}' -> '{formatted_text}' "
+                                 f"(conf: {confidence:.3f}, auto: {auto_formatted})")
+            else:
+                logger.debug(f"🔍 [SYNC] Frame sin detecciones válidas")
 
             return result
 
@@ -680,97 +744,18 @@ class StreamingVideoProcessor:
 
     def _draw_detections_enhanced_on_frame_safe(self, frame: np.ndarray,
                                                 detections: List[Dict[str, Any]]) -> np.ndarray:
-        """✅ MEJORADO: Dibuja las detecciones con indicadores de 6 caracteres"""
+        """✅ ACTUALIZADO: Dibuja ROI, detecciones y recortes de placas"""
         try:
             annotated_frame = frame.copy()
 
-            for detection in detections:
-                try:
-                    bbox = detection.get("plate_bbox", [0, 0, 0, 0])
-                    plate_text = str(detection.get("plate_text", ""))
-                    confidence = float(detection.get("overall_confidence", 0.0))
-                    is_valid = bool(detection.get("is_valid_plate", False))
-                    is_six_char = bool(detection.get("six_char_validated", False))  # ✅ NUEVO
+            # ✅ 1. DIBUJAR ROI CENTRAL PRIMERO
+            annotated_frame = self._draw_roi_overlay(annotated_frame)
 
-                    if len(bbox) != 4:
-                        continue
+            # ✅ 2. DIBUJAR DETECCIONES DE PLACAS
+            annotated_frame = self._draw_plate_detections(annotated_frame, detections)
 
-                    # Coordenadas
-                    x1, y1, x2, y2 = map(int, bbox)
-
-                    # Verificar que las coordenadas están dentro del frame
-                    h, w = frame.shape[:2]
-                    if x1 < 0 or y1 < 0 or x2 > w or y2 > h or x1 >= x2 or y1 >= y2:
-                        continue
-
-                    # ✅ COLOR SEGÚN VALIDEZ Y 6 CARACTERES
-                    if is_six_char:
-                        color = (0, 255, 0)  # Verde brillante para 6 caracteres válidos
-                        thickness = 4
-                    elif is_valid:
-                        color = (255, 255, 0)  # Amarillo para válidos pero no 6 chars
-                        thickness = 3
-                    elif confidence > 0.5:
-                        color = (255, 165, 0)  # Naranja para confianza media
-                        thickness = 2
-                    else:
-                        color = (255, 0, 0)  # Rojo para baja confianza
-                        thickness = 2
-
-                    # Dibujar rectángulo
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
-
-                    # ✅ PREPARAR ETIQUETA MEJORADA
-                    indicators = []
-                    if is_six_char:
-                        indicators.append("✅6")
-                    elif is_valid:
-                        indicators.append("✓")
-
-                    char_count = detection.get("char_count", len(plate_text.replace('-', '').replace(' ', '')))
-
-                    label = f"{plate_text}"
-                    if indicators:
-                        label += f" {' '.join(indicators)}"
-                    label += f" ({char_count}ch)"
-
-                    # Dibujar etiqueta con fondo
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.7
-                    label_thickness = 2
-
-                    (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, label_thickness)
-
-                    # Verificar que el texto cabe en el frame
-                    if y1 - text_h - 8 >= 0 and x1 + text_w + 8 <= w:
-                        # Fondo para la etiqueta
-                        cv2.rectangle(
-                            annotated_frame,
-                            (x1, y1 - text_h - baseline - 8),
-                            (x1 + text_w + 8, y1),
-                            color,
-                            -1
-                        )
-
-                        # Texto principal
-                        cv2.putText(
-                            annotated_frame,
-                            label,
-                            (x1 + 4, y1 - baseline - 4),
-                            font,
-                            font_scale,
-                            (255, 255, 255),
-                            label_thickness
-                        )
-
-                        # ✅ INDICADOR ADICIONAL PARA 6 CARACTERES
-                        if is_six_char:
-                            # Pequeño círculo verde en la esquina
-                            cv2.circle(annotated_frame, (x2 - 8, y1 + 8), 6, (0, 255, 0), -1)
-
-                except Exception as det_error:
-                    logger.warning(f"⚠️ Error dibujando detección mejorada: {str(det_error)}")
-                    continue
+            # ✅ 3. MOSTRAR RECORTES DE PLACAS
+            annotated_frame = self._draw_plate_crops(annotated_frame, detections)
 
             return annotated_frame
 
@@ -778,7 +763,173 @@ class StreamingVideoProcessor:
             logger.warning(f"⚠️ Error dibujando detecciones mejoradas: {str(e)}")
             return frame
 
-    # ... [métodos auxiliares sin cambios] ...
+    def _draw_roi_overlay(self, frame: np.ndarray) -> np.ndarray:
+        """✅ NUEVO: Dibuja overlay del ROI central"""
+        try:
+            height, width = frame.shape[:2]
+
+            # Calcular ROI central (10%)
+            roi_width = int(width * 0.9)  # 60% del ancho
+            roi_height = int(height * 0.9)  # 60% del alto
+
+            x_start = (width - roi_width) // 2
+            y_start = (height - roi_height) // 2
+            x_end = x_start + roi_width
+            y_end = y_start + roi_height
+
+            # Crear overlay semi-transparente
+            overlay = frame.copy()
+
+            # Oscurecer área fuera del ROI
+            cv2.rectangle(overlay, (0, 0), (width, height), (0, 0, 0), -1)
+            cv2.rectangle(overlay, (x_start, y_start), (x_end, y_end), (255, 255, 255), -1)
+
+            # Aplicar overlay con transparencia
+            alpha = 0.15  # 15% de oscurecimiento
+            cv2.addWeighted(frame, 1 - alpha, overlay, alpha, 0, frame)
+
+            # Dibujar borde del ROI
+            cv2.rectangle(frame, (x_start, y_start), (x_end, y_end), (0, 255, 255), 2)
+
+            # Etiqueta del ROI
+            cv2.putText(frame, "ROI Central", (x_start + 5, y_start + 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+            return frame
+
+        except Exception as e:
+            logger.debug(f"Error dibujando ROI: {e}")
+            return frame
+
+    def _draw_plate_detections(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
+        """✅ ACTUALIZADO: Dibuja detecciones de placas con mejor info"""
+        for detection in detections:
+            try:
+                bbox = detection.get("plate_bbox", [0, 0, 0, 0])
+                if len(bbox) != 4:
+                    continue
+
+                x1, y1, x2, y2 = map(int, bbox)
+
+                # Verificar coordenadas válidas
+                h, w = frame.shape[:2]
+                if x1 < 0 or y1 < 0 or x2 > w or y2 > h or x1 >= x2 or y1 >= y2:
+                    continue
+
+                # Color según validación
+                is_six_char = detection.get("six_char_validated", False)
+                auto_formatted = detection.get("auto_formatted", False)
+
+                if is_six_char and auto_formatted:
+                    color = (0, 255, 0)  # Verde brillante
+                    thickness = 4
+                elif is_six_char:
+                    color = (0, 200, 255)  # Azul
+                    thickness = 3
+                else:
+                    color = (255, 255, 0)  # Amarillo
+                    thickness = 2
+
+                # Dibujar rectángulo
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+
+                # Preparar texto
+                formatted_text = detection.get("plate_text", "")
+                raw_text = detection.get("raw_plate_text", "")
+                confidence = detection.get("overall_confidence", 0.0)
+
+                if raw_text and formatted_text and raw_text != formatted_text:
+                    label = f"{raw_text}→{formatted_text}"
+                else:
+                    label = formatted_text or raw_text
+
+                label += f" ({confidence:.2f})"
+
+                # Dibujar etiqueta con fondo
+                (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+
+                if y1 - text_h - 8 >= 0:
+                    cv2.rectangle(frame, (x1, y1 - text_h - 8), (x1 + text_w + 8, y1), color, -1)
+                    cv2.putText(frame, label, (x1 + 4, y1 - 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+            except Exception as e:
+                logger.debug(f"Error dibujando detección: {e}")
+
+        return frame
+
+    def _draw_plate_crops(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
+        """✅ NUEVO: Muestra recortes de placas en la esquina"""
+        try:
+            crop_size = 80  # Tamaño de los crops
+            margin = 10
+            start_x = frame.shape[1] - crop_size - margin
+
+            for i, detection in enumerate(detections[:4]):  # Máximo 4 crops
+                try:
+                    bbox = detection.get("plate_bbox", [])
+                    if len(bbox) != 4:
+                        continue
+
+                    x1, y1, x2, y2 = map(int, bbox)
+
+                    # Verificar que el bbox es válido
+                    h, w = frame.shape[:2]
+                    if x1 < 0 or y1 < 0 or x2 > w or y2 > h or x1 >= x2 or y1 >= y2:
+                        continue
+
+                    # Extraer región de placa
+                    plate_crop = frame[y1:y2, x1:x2]
+                    if plate_crop.size == 0:
+                        continue
+
+                    # Redimensionar manteniendo aspect ratio
+                    crop_h, crop_w = plate_crop.shape[:2]
+                    if crop_w > crop_h:
+                        new_w = crop_size
+                        new_h = int((crop_size * crop_h) / crop_w)
+                    else:
+                        new_h = crop_size
+                        new_w = int((crop_size * crop_w) / crop_h)
+
+                    if new_w > 0 and new_h > 0:
+                        crop_resized = cv2.resize(plate_crop, (new_w, new_h))
+
+                        # Posición del crop
+                        crop_y = margin + (i * (crop_size + margin))
+
+                        # Verificar que cabe en la imagen
+                        if crop_y + new_h < frame.shape[0] and start_x + new_w < frame.shape[1]:
+                            # Fondo negro para el crop
+                            cv2.rectangle(frame,
+                                          (start_x - 2, crop_y - 2),
+                                          (start_x + crop_size + 2, crop_y + crop_size + 2),
+                                          (0, 0, 0), -1)
+
+                            # Pegar crop
+                            frame[crop_y:crop_y + new_h, start_x:start_x + new_w] = crop_resized
+
+                            # Marco del crop
+                            color = (0, 255, 0) if detection.get("six_char_validated") else (255, 255, 0)
+                            cv2.rectangle(frame,
+                                          (start_x - 1, crop_y - 1),
+                                          (start_x + new_w + 1, crop_y + new_h + 1),
+                                          color, 2)
+
+                            # Número del crop
+                            cv2.putText(frame, str(i + 1), (start_x + 5, crop_y + 15),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+                            # Línea conectando bbox original con crop
+                            cv2.line(frame, (x2, y1), (start_x, crop_y), color, 1)
+
+                except Exception as crop_error:
+                    logger.debug(f"Error creando crop {i}: {crop_error}")
+
+        except Exception as e:
+            logger.debug(f"Error dibujando crops: {e}")
+
+        return frame
 
     def _calculate_bbox_area_safe(self, bbox: List[float]) -> float:
         """Calcula área del bounding box de forma segura"""
@@ -866,7 +1017,7 @@ class StreamingVideoProcessor:
             return ""
 
     async def _send_initial_update_enhanced(self, session_id: str, total_frames: int):
-        """✅ MEJORADO: Envía actualización inicial con información de mejoras"""
+        """✅ MEJORADO: Envía actualización inicial con información de 6 chars sin guión"""
         try:
             from api.routes.streaming import get_session
 
@@ -886,31 +1037,37 @@ class StreamingVideoProcessor:
                             "timestamp": 0.0,
                             "processing_time": 0.0,
                             "success": True,
-                            "roi_used": True,  # ✅ NUEVO
-                            "six_char_filter_applied": True  # ✅ NUEVO
+                            "roi_used": True,
+                            "six_char_filter_applied": True,
+                            "auto_dash_formatting": True  # ✅ NUEVO
                         },
                         "detection_summary": {
                             "total_detections": 0,
                             "unique_plates_count": 0,
                             "valid_plates_count": 0,
-                            "six_char_plates_count": 0,  # ✅ NUEVO
+                            "six_char_plates_count": 0,
+                            "auto_formatted_plates_count": 0,  # ✅ NUEVO
                             "frames_with_detections": 0,
                             "best_plates": [],
-                            "best_six_char_plates": [],  # ✅ NUEVO
+                            "best_six_char_plates": [],
+                            "best_auto_formatted_plates": [],  # ✅ NUEVO
                             "latest_detections": [],
-                            "six_char_detection_rate": 0.0  # ✅ NUEVO
+                            "six_char_detection_rate": 0.0,
+                            "auto_formatted_rate": 0.0  # ✅ NUEVO
                         },
-                        "enhancement_info": {  # ✅ INFORMACIÓN DE MEJORAS
+                        "enhancement_info": {  # ✅ INFORMACIÓN ACTUALIZADA
                             "roi_enabled": True,
                             "roi_percentage": 10.0,
                             "six_char_filter": True,
-                            "processing_method": "roi_enhanced"
+                            "model_expects_dash": False,
+                            "auto_dash_formatting": True,
+                            "processing_method": "roi_enhanced_6chars_no_dash"
                         }
                     }
                 })
-                logger.debug(f"📤 [INITIAL] Actualización inicial mejorada enviada para {session_id}")
+                logger.debug(f"📤 [INITIAL] Actualización inicial para 6 chars sin guión enviada: {session_id}")
         except Exception as e:
-            logger.warning(f"⚠️ [INITIAL] Error enviando actualización inicial mejorada: {str(e)}")
+            logger.warning(f"⚠️ [INITIAL] Error enviando actualización inicial: {str(e)}")
 
     async def _send_streaming_update_enhanced(
             self,
@@ -918,7 +1075,7 @@ class StreamingVideoProcessor:
             streaming_frame: StreamingFrame,
             detection_tracker: StreamingDetectionTracker
     ):
-        """✅ MEJORADO: Envía actualización de streaming con información de 6 caracteres"""
+        """✅ MEJORADO: Envía actualización de streaming con información de 6 caracteres sin guión"""
         try:
             from api.routes.streaming import get_session
 
@@ -943,9 +1100,10 @@ class StreamingVideoProcessor:
                     "timestamp": streaming_frame.timestamp,
                     "processing_time": streaming_frame.processing_time,
                     "success": streaming_frame.success,
-                    "roi_used": streaming_frame.roi_used,  # ✅ NUEVO
-                    "six_char_filter_applied": streaming_frame.six_char_filter_applied,  # ✅ NUEVO
-                    "six_char_detections_in_frame": streaming_frame.six_char_detections_count  # ✅ NUEVO
+                    "roi_used": streaming_frame.roi_used,
+                    "six_char_filter_applied": streaming_frame.six_char_filter_applied,
+                    "six_char_detections_in_frame": streaming_frame.six_char_detections_count,
+                    "auto_formatted_detections_in_frame": streaming_frame.auto_formatted_count  # ✅ NUEVO
                 },
                 "progress": {
                     "processed_frames": session.processed_frames,
@@ -959,12 +1117,15 @@ class StreamingVideoProcessor:
                     "elapsed_time": time.time() - session.start_time if session.start_time else 0,
                     "estimated_remaining": self._estimate_remaining_time(session)
                 },
-                "enhancement_stats": {  # ✅ ESTADÍSTICAS DE MEJORAS
+                "enhancement_stats": {  # ✅ ESTADÍSTICAS ACTUALIZADAS
                     "roi_processing": True,
                     "six_char_filter_active": True,
+                    "auto_dash_formatting": True,
                     "total_six_char_detections": detection_tracker.total_six_char_detections,
+                    "total_auto_formatted_detections": detection_tracker.total_auto_formatted_detections,
                     "six_char_plates_found": len(detection_tracker.six_char_plates),
-                    "six_char_detection_rate": detection_summary.get("six_char_detection_rate", 0.0)
+                    "six_char_detection_rate": detection_summary.get("six_char_detection_rate", 0.0),
+                    "auto_formatted_rate": detection_summary.get("auto_formatted_rate", 0.0)
                 }
             }
 
@@ -997,13 +1158,13 @@ class StreamingVideoProcessor:
             if not success:
                 logger.warning(f"⚠️ [UPDATE] No se pudo enviar actualización a {session_id}")
             else:
-                logger.debug(f"✅ [UPDATE] Actualización mejorada enviada exitosamente a {session_id}")
+                logger.debug(f"✅ [UPDATE] Actualización de 6 chars sin guión enviada a {session_id}")
 
         except Exception as e:
-            logger.error(f"❌ [UPDATE] Error enviando actualización de streaming mejorada: {str(e)}")
+            logger.error(f"❌ [UPDATE] Error enviando actualización de streaming: {str(e)}")
 
     async def _finalize_streaming_enhanced(self, session_id: str, detection_tracker: StreamingDetectionTracker):
-        """✅ MEJORADO: Finaliza el streaming con resumen completo de mejoras"""
+        """✅ MEJORADO: Finaliza el streaming con resumen completo de 6 chars sin guión"""
         try:
             from api.routes.streaming import get_session
 
@@ -1012,9 +1173,11 @@ class StreamingVideoProcessor:
                 logger.warning(f"⚠️ [FINALIZE] Sesión no encontrada para finalización: {session_id}")
                 return
 
-            # Generar resumen final completo con estadísticas de mejoras
+            # Generar resumen final completo con estadísticas de 6 chars sin guión
             detection_summary = detection_tracker.get_streaming_summary()
             six_char_plates = [p for p in detection_tracker.unique_plates.values() if p.get("is_six_char_valid", False)]
+            auto_formatted_plates = [p for p in detection_tracker.unique_plates.values() if
+                                     p.get("auto_formatted", False)]
 
             final_summary = {
                 "session_id": session_id,
@@ -1025,20 +1188,31 @@ class StreamingVideoProcessor:
                 "detection_summary": detection_summary,
                 "video_info": session.video_info,
                 "processing_params": session.processing_params,
-                # ✅ RESUMEN DE MEJORAS
+                # ✅ RESUMEN ACTUALIZADO
                 "enhancement_summary": {
                     "roi_processing": True,
                     "roi_percentage": 10.0,
                     "six_char_filter": True,
+                    "model_expects_dash": False,
+                    "auto_dash_formatting": True,
                     "total_six_char_detections": detection_tracker.total_six_char_detections,
+                    "total_auto_formatted_detections": detection_tracker.total_auto_formatted_detections,
                     "six_char_plates_found": len(six_char_plates),
+                    "auto_formatted_plates_found": len(auto_formatted_plates),
                     "six_char_success_rate": (len(six_char_plates) / max(len(detection_tracker.unique_plates),
                                                                          1)) * 100,
-                    "processing_method": "roi_enhanced"
+                    "auto_formatted_rate": (len(auto_formatted_plates) / max(len(detection_tracker.unique_plates),
+                                                                             1)) * 100,
+                    "processing_method": "roi_enhanced_6chars_no_dash"
                 },
-                # ✅ MEJORES PLACAS DE 6 CARACTERES
+                # ✅ MEJORES PLACAS POR CATEGORÍA
                 "best_six_char_plates": sorted(
                     six_char_plates,
+                    key=lambda p: p["best_confidence"],
+                    reverse=True
+                )[:3],
+                "best_auto_formatted_plates": sorted(
+                    auto_formatted_plates,
                     key=lambda p: p["best_confidence"],
                     reverse=True
                 )[:3]
@@ -1054,15 +1228,18 @@ class StreamingVideoProcessor:
             })
 
             six_char_count = len(six_char_plates)
+            auto_formatted_count = len(auto_formatted_plates)
             total_plates = len(detection_tracker.unique_plates)
 
-            logger.success(f"✅ [FINALIZE] Streaming mejorado completado: {session_id} - "
-                           f"Placas: {total_plates} total, {six_char_count} con 6 caracteres válidos "
-                           f"({(six_char_count / max(total_plates, 1) * 100):.1f}% éxito), "
+            logger.success(f"✅ [FINALIZE] Streaming de 6 chars sin guión completado: {session_id} - "
+                           f"Placas: {total_plates} total, {six_char_count} con 6 chars válidos "
+                           f"({(six_char_count / max(total_plates, 1) * 100):.1f}% 6chars), "
+                           f"{auto_formatted_count} auto-formateadas "
+                           f"({(auto_formatted_count / max(total_plates, 1) * 100):.1f}% auto), "
                            f"Frames: {session.processed_frames}")
 
         except Exception as e:
-            logger.error(f"❌ [FINALIZE] Error finalizando streaming mejorado: {str(e)}")
+            logger.error(f"❌ [FINALIZE] Error finalizando streaming: {str(e)}")
 
     # ... [resto de métodos auxiliares sin cambios] ...
 
@@ -1185,7 +1362,7 @@ class StreamingVideoProcessor:
             self.quality_managers.clear()
             self.detection_trackers.clear()
 
-            logger.info("🧹 StreamingVideoProcessor mejorado limpiado")
+            logger.info("🧹 StreamingVideoProcessor para 6 chars sin guión limpiado")
         except Exception as e:
             logger.warning(f"⚠️ Error en cleanup: {str(e)}")
 

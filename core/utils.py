@@ -695,25 +695,25 @@ class VideoProgressTracker:
 
 def validate_peruvian_plate_format(plate_text: str) -> bool:
     """
-    Valida si un texto corresponde a un formato de placa peruana válido
-
-    Args:
-        plate_text: Texto de la placa a validar
-
-    Returns:
-        True si es formato válido, False en caso contrario
+    ✅ CORREGIDO: Valida formato de placa peruana
+    Acepta tanto formatos con guión como sin guión (6 caracteres)
     """
     import re
 
     if not plate_text:
         return False
 
-    # Patrones de placas peruanas - CORREGIDO
+    # ✅ PATRONES ACTUALIZADOS: Con y sin guión
     patterns = [
-        r'^[A-Z]{3}-\d{3}$',  # Formato actual: ABC-123
-        r'^[A-Z]{2}-\d{4}$',  # Formato anterior: AB-1234
-        r'^[A-Z]\d{2}-\d{3}$',  # Motos: A12-345
-        r'^[A-Z]{3}\d{3}$',  # Sin guión: ABC123
+        # Formatos CON guión (formateados)
+        r'^[A-Z]{3}-\d{3}$',  # ABC-123
+        r'^[A-Z]{2}-\d{4}$',  # AB-1234
+        r'^[A-Z]\d{2}-\d{3}$',  # A12-345 (motos)
+
+        # ✅ NUEVOS: Formatos SIN guión (como detecta el modelo)
+        r'^[A-Z]{3}\d{3}$',  # ABC123
+        r'^[A-Z]{2}\d{4}$',  # AB1234
+        r'^[A-Z]\d{2}\d{3}$',  # A12345 (motos)
     ]
 
     for pattern in patterns:
@@ -725,13 +725,8 @@ def validate_peruvian_plate_format(plate_text: str) -> bool:
 
 def clean_plate_text(plate_text: str) -> str:
     """
-    Limpia y normaliza texto de placa
-
-    Args:
-        plate_text: Texto crudo de la placa
-
-    Returns:
-        Texto limpio y normalizado
+    ✅ CORREGIDO: Limpia y normaliza texto de placa
+    Mantiene solo caracteres alfanuméricos si no hay guión válido
     """
     if not plate_text:
         return ""
@@ -739,11 +734,77 @@ def clean_plate_text(plate_text: str) -> str:
     # Convertir a mayúsculas
     cleaned = plate_text.upper()
 
-    # Remover caracteres no válidos
+    # ✅ NUEVA LÓGICA: Si ya tiene formato válido, mantenerlo
+    if validate_peruvian_plate_format(cleaned):
+        return cleaned
+
+    # ✅ Si no es válido, limpiar solo alfanuméricos
     import re
-    cleaned = re.sub(r'[^A-Z0-9\-]', '', cleaned)
+    alphanumeric_only = re.sub(r'[^A-Z0-9]', '', cleaned)
 
-    # Normalizar guiones
-    cleaned = re.sub(r'-+', '-', cleaned)
+    # ✅ Si son exactamente 6 caracteres, intentar formatear
+    if len(alphanumeric_only) == 6:
+        # ABC123 -> ABC-123
+        if alphanumeric_only[:3].isalpha() and alphanumeric_only[3:].isdigit():
+            return f"{alphanumeric_only[:3]}-{alphanumeric_only[3:]}"
+        # AB1234 -> AB-1234
+        elif alphanumeric_only[:2].isalpha() and alphanumeric_only[2:].isdigit():
+            return f"{alphanumeric_only[:2]}-{alphanumeric_only[2:]}"
 
-    return cleaned.strip()
+    # ✅ Si no se puede formatear, devolver sin guión
+    return alphanumeric_only
+
+
+def format_plate_text_for_display(raw_plate_text: str) -> str:
+    """
+    ✅ NUEVA FUNCIÓN: Formatea placa de 6 caracteres para mostrar con guión
+    """
+    if not raw_plate_text or len(raw_plate_text) != 6:
+        return raw_plate_text
+
+    # ABC123 -> ABC-123
+    if raw_plate_text[:3].isalpha() and raw_plate_text[3:].isdigit():
+        return f"{raw_plate_text[:3]}-{raw_plate_text[3:]}"
+
+    # AB1234 -> AB-1234
+    elif raw_plate_text[:2].isalpha() and raw_plate_text[2:].isdigit():
+        return f"{raw_plate_text[:2]}-{raw_plate_text[2:]}"
+
+    # Si no coincide con patrones, devolver sin cambios
+    return raw_plate_text
+
+
+def extract_raw_plate_text(formatted_plate_text: str) -> str:
+    """
+    ✅ NUEVA FUNCIÓN: Extrae texto crudo (sin guión) de texto formateado
+    """
+    if not formatted_plate_text:
+        return ""
+
+    # Remover guiones y espacios
+    raw_text = ''.join(c for c in formatted_plate_text if c.isalnum()).upper()
+
+    return raw_text
+
+
+def is_six_char_plate_format(plate_text: str) -> bool:
+    """
+    ✅ NUEVA FUNCIÓN: Verifica si es formato válido de 6 caracteres
+    """
+    if not plate_text:
+        return False
+
+    # Remover guiones para verificar
+    clean_text = extract_raw_plate_text(plate_text)
+
+    if len(clean_text) != 6:
+        return False
+
+    # Verificar patrones válidos
+    import re
+    patterns = [
+        r'^[A-Z]{3}\d{3}$',  # ABC123
+        r'^[A-Z]{2}\d{4}$',  # AB1234
+    ]
+
+    return any(re.match(pattern, clean_text) for pattern in patterns)

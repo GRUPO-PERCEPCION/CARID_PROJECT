@@ -22,6 +22,7 @@ from core.enhanced_pipeline import EnhancedALPRPipeline
 class PlateTracker:
     """Clase básica para trackear placas detectadas y evitar duplicados"""
     plate_text: str
+    raw_plate_text: str  # ✅ NUEVO: Texto sin guión (como detecta el modelo)
     best_confidence: float
     best_frame: int
     detection_count: int
@@ -29,9 +30,11 @@ class PlateTracker:
     last_seen: int
     bbox_history: List[List[float]] = field(default_factory=list)
     confidences: List[float] = field(default_factory=list)
-    is_six_char_valid: bool = False  # ✅ NUEVO: Validación de 6 caracteres
+    is_six_char_valid: bool = False  # ✅ Validación de 6 caracteres
+    auto_formatted: bool = False  # ✅ NUEVO: Si fue formateado automáticamente
 
-    def update(self, confidence: float, frame_num: int, bbox: List[float], is_six_char: bool = False):
+    def update(self, confidence: float, frame_num: int, bbox: List[float], is_six_char: bool = False,
+               auto_formatted: bool = False):
         """Actualiza el tracker con nueva detección"""
         self.detection_count += 1
         self.last_seen = frame_num
@@ -41,6 +44,10 @@ class PlateTracker:
         # Actualizar validación de 6 caracteres
         if is_six_char:
             self.is_six_char_valid = True
+
+        # Actualizar formateo automático
+        if auto_formatted:
+            self.auto_formatted = True
 
         # Actualizar mejor detección
         if confidence > self.best_confidence:
@@ -80,7 +87,7 @@ class PlateTracker:
 
 
 class VideoService:
-    """Servicio para procesamiento de videos con ROI central y filtro de 6 caracteres"""
+    """Servicio para procesamiento de videos con ROI central y filtro de 6 caracteres SIN guión"""
 
     def __init__(self):
         self.model_manager = model_manager
@@ -98,7 +105,7 @@ class VideoService:
         # Thread pool para procesamiento paralelo
         self.executor = ThreadPoolExecutor(max_workers=2)
 
-        logger.info("🎬 VideoService inicializado con ROI central y filtro de 6 caracteres")
+        logger.info("🎬 VideoService inicializado para modelos de 6 caracteres SIN guión")
 
     async def process_video(
             self,
@@ -107,7 +114,7 @@ class VideoService:
             request_params: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Procesa un video completo con ROI central y filtro de 6 caracteres
+        Procesa un video completo con ROI central y filtro de 6 caracteres SIN guión
         """
         start_time = time.time()
         result_id = self.file_service.create_result_id()
@@ -137,8 +144,8 @@ class VideoService:
             # Configurar parámetros de procesamiento
             self.frame_skip = request_params.get('frame_skip', self.frame_skip)
 
-            # ✅ PROCESAR CON ROI Y FILTRO DE 6 CARACTERES
-            with PerformanceTimer("Procesamiento de video con ROI + 6 chars"):
+            # ✅ PROCESAR CON ROI Y FILTRO DE 6 CARACTERES SIN GUIÓN
+            with PerformanceTimer("Procesamiento de video con ROI + 6 chars SIN guión"):
                 tracking_result = await self._process_video_with_roi_and_filter(
                     video_path, video_info, request_params
                 )
@@ -179,27 +186,36 @@ class VideoService:
                     "total_detections": tracking_result['total_detections'],
                     "unique_plates_found": len(unique_plates),
                     "valid_plates": len([p for p in unique_plates if self._get_is_valid(p)]),
-                    "six_char_plates": len([p for p in unique_plates if p.get('is_six_char_valid', False)])  # ✅ NUEVO
+                    "six_char_plates": len([p for p in unique_plates if p.get('is_six_char_valid', False)]),
+                    "auto_formatted_plates": len([p for p in unique_plates if p.get('auto_formatted', False)])
+                    # ✅ NUEVO
                 },
                 "unique_plates": unique_plates,
                 "best_plate": unique_plates[0] if unique_plates else None,
                 "processing_time": round(processing_time, 3),
                 "timestamp": time.time(),
                 "result_urls": result_urls if result_urls else None,
-                "tracking_type": "enhanced_roi_6chars",  # ✅ NUEVO TIPO
+                "tracking_type": "enhanced_roi_6chars_no_dash",  # ✅ NUEVO TIPO
                 "enhancement_info": {  # ✅ INFORMACIÓN ADICIONAL
                     "roi_enabled": True,
                     "six_char_filter": True,
-                    "roi_percentage": 10.0
+                    "roi_percentage": 10.0,
+                    "model_expects_dash": False,  # ✅ NUEVO
+                    "auto_dash_formatting": True  # ✅ NUEVO
                 }
             }
 
             # Limpiar archivo temporal
             self.file_service.cleanup_temp_file(video_path)
 
+            # ✅ LOG MEJORADO
+            six_char_count = len([p for p in unique_plates if p.get('is_six_char_valid', False)])
+            auto_formatted_count = len([p for p in unique_plates if p.get('auto_formatted', False)])
+
             logger.success(f"✅ Video procesado en {processing_time:.3f}s. "
-                           f"Placas únicas encontradas: {len(unique_plates)} "
-                           f"(6 chars válidas: {len([p for p in unique_plates if p.get('is_six_char_valid', False)])})")
+                           f"Placas únicas: {len(unique_plates)} "
+                           f"(6 chars válidas: {six_char_count}, "
+                           f"auto-formateadas: {auto_formatted_count})")
 
             return result
 
@@ -222,7 +238,8 @@ class VideoService:
                     "total_detections": 0,
                     "unique_plates_found": 0,
                     "valid_plates": 0,
-                    "six_char_plates": 0
+                    "six_char_plates": 0,
+                    "auto_formatted_plates": 0
                 },
                 "unique_plates": [],
                 "best_plate": None,
@@ -238,7 +255,7 @@ class VideoService:
             video_info: Dict[str, Any],
             request_params: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """✅ NUEVO: Procesa video con ROI central y filtro de 6 caracteres"""
+        """✅ CORREGIDO: Procesa video con ROI central y filtro de 6 caracteres SIN guión"""
 
         plate_trackers: Dict[str, PlateTracker] = {}
         frame_results = []
@@ -247,13 +264,17 @@ class VideoService:
         frames_with_detections = 0
         total_detections = 0
         six_char_detections = 0  # ✅ CONTADOR NUEVO
+        auto_formatted_detections = 0  # ✅ CONTADOR NUEVO
 
         cap = cv2.VideoCapture(video_path)
         frame_num = 0
 
         # Configurar parámetros para el modelo
-        confidence_threshold = request_params.get('confidence_threshold', 0.4)
+        confidence_threshold = request_params.get('confidence_threshold', 0.2)  # ✅ MÁS PERMISIVO
         iou_threshold = request_params.get('iou_threshold', 0.4)
+
+        logger.info(f"⚙️ Configuración: confidence={confidence_threshold}, iou={iou_threshold}, "
+                    f"frame_skip={self.frame_skip}, modelo_espera_6_chars_sin_guion=True")
 
         try:
             while True:
@@ -267,7 +288,7 @@ class VideoService:
                         # Convertir frame a RGB
                         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                        # ✅ PROCESAR CON PIPELINE MEJORADO (ROI + FILTRO 6 CHARS)
+                        # ✅ PROCESAR CON PIPELINE MEJORADO (ROI + FILTRO 6 CHARS SIN GUIÓN)
                         frame_result = self._process_single_frame_with_enhancements(
                             frame_rgb, frame_num, confidence_threshold, iou_threshold
                         )
@@ -278,10 +299,18 @@ class VideoService:
                             frames_with_detections += 1
                             total_detections += len(frame_result['detections'])
 
-                            # Contar detecciones de 6 caracteres
+                            # Contar detecciones de 6 caracteres y auto-formateadas
                             six_char_count = len(
                                 [d for d in frame_result['detections'] if d.get('six_char_validated', False)])
+                            auto_formatted_count = len(
+                                [d for d in frame_result['detections'] if d.get('auto_formatted', False)])
+
                             six_char_detections += six_char_count
+                            auto_formatted_detections += auto_formatted_count
+
+                            # ✅ LOG DETALLADO
+                            logger.debug(f"🎯 Frame {frame_num}: {len(frame_result['detections'])} detecciones "
+                                         f"({six_char_count} válidas 6chars, {auto_formatted_count} auto-formateadas)")
 
                             # Actualizar trackers con nuevas detecciones
                             self._update_trackers_enhanced(
@@ -296,9 +325,11 @@ class VideoService:
                         if frames_processed % 30 == 0:
                             progress = (frame_num / video_info['total_frames']) * 100
                             six_char_plates = len([t for t in plate_trackers.values() if t.is_six_char_valid])
+                            auto_formatted_plates = len([t for t in plate_trackers.values() if t.auto_formatted])
+
                             logger.info(f"📊 Progreso: {progress:.1f}% - "
                                         f"Placas únicas: {len(plate_trackers)} "
-                                        f"(6 chars: {six_char_plates})")
+                                        f"(6 chars: {six_char_plates}, auto: {auto_formatted_plates})")
 
                     except Exception as e:
                         logger.warning(f"⚠️ Error procesando frame {frame_num}: {str(e)}")
@@ -318,7 +349,8 @@ class VideoService:
             "frames_processed": frames_processed,
             "frames_with_detections": frames_with_detections,
             "total_detections": total_detections,
-            "six_char_detections": six_char_detections  # ✅ NUEVO
+            "six_char_detections": six_char_detections,  # ✅ NUEVO
+            "auto_formatted_detections": auto_formatted_detections  # ✅ NUEVO
         }
 
     def _process_single_frame_with_enhancements(
@@ -329,14 +361,14 @@ class VideoService:
             iou_threshold: float
     ) -> Dict[str, Any]:
         """
-        ✅ NUEVO: Procesa un frame con ROI central y filtro de 6 caracteres
+        ✅ CORREGIDO: Procesa un frame con ROI central y filtro de 6 caracteres SIN guión
         """
         try:
             # ✅ PROCESAR CON PIPELINE MEJORADO
             result = self.enhanced_pipeline.process_with_enhancements(
                 frame,
                 use_roi=True,  # ✅ ACTIVAR ROI CENTRAL
-                filter_six_chars=True,  # ✅ ACTIVAR FILTRO 6 CHARS
+                filter_six_chars=True,  # ✅ ACTIVAR FILTRO 6 CHARS SIN GUIÓN
                 return_stats=False,
                 conf=confidence_threshold,
                 iou=iou_threshold
@@ -346,27 +378,37 @@ class VideoService:
             detections = []
             if result.get("success") and result.get("final_results"):
                 for plate_result in result["final_results"]:
-                    if plate_result["plate_text"]:
+                    # ✅ USAR TEXTO FORMATEADO (con guión) y raw (sin guión)
+                    formatted_text = plate_result.get("plate_text", "")
+                    raw_text = plate_result.get("raw_plate_text", "")
+
+                    if formatted_text or raw_text:
                         detection = {
-                            "plate_text": plate_result["plate_text"],
+                            "plate_text": formatted_text,  # ✅ CON GUIÓN PARA MOSTRAR
+                            "raw_plate_text": raw_text,  # ✅ SIN GUIÓN (modelo original)
                             "confidence": plate_result["overall_confidence"],
                             "plate_bbox": plate_result["plate_bbox"],
                             "plate_confidence": plate_result["plate_confidence"],
                             "char_confidence": plate_result.get("character_recognition", {}).get("confidence", 0.0),
                             "is_valid_plate": plate_result["is_valid_plate"],
                             "six_char_validated": plate_result.get("six_char_validated", False),  # ✅ NUEVO
+                            "auto_formatted": plate_result.get("auto_formatted", False),  # ✅ NUEVO
                             "validation_info": plate_result.get("validation_info", {}),  # ✅ NUEVO
                             "frame_num": frame_num,
-                            "processing_method": "roi"  # ✅ MARCADOR
+                            "processing_method": "roi_6chars_no_dash"  # ✅ MARCADOR ACTUALIZADO
                         }
                         detections.append(detection)
+
+                        logger.debug(f"✅ [FRAME {frame_num}] Placa: '{raw_text}' -> '{formatted_text}' "
+                                     f"(6chars: {detection['six_char_validated']}, auto: {detection['auto_formatted']})")
 
             return {
                 "frame_num": frame_num,
                 "detections": detections,
                 "processing_success": result.get("success", False),
                 "roi_used": result.get("use_roi", False),  # ✅ NUEVO
-                "filter_applied": result.get("filter_six_chars", False)  # ✅ NUEVO
+                "filter_applied": result.get("filter_six_chars", False),  # ✅ NUEVO
+                "model_info": result.get("model_info", {})  # ✅ NUEVO
             }
 
         except Exception as e:
@@ -386,47 +428,56 @@ class VideoService:
             detections: List[Dict[str, Any]],
             frame_num: int
     ):
-        """✅ ACTUALIZADO: Actualiza trackers con información de 6 caracteres"""
+        """✅ ACTUALIZADO: Actualiza trackers con información de 6 caracteres y formateo automático"""
         for detection in detections:
-            plate_text = detection["plate_text"]
+            formatted_text = detection["plate_text"]  # Con guión
+            raw_text = detection.get("raw_plate_text", "")  # Sin guión
             confidence = detection["confidence"]
             bbox = detection["plate_bbox"]
             is_six_char = detection.get("six_char_validated", False)  # ✅ NUEVO
+            auto_formatted = detection.get("auto_formatted", False)  # ✅ NUEVO
 
-            # Buscar tracker existente para esta placa
+            # ✅ USAR TEXTO FORMATEADO COMO CLAVE PRINCIPAL
+            tracking_key = formatted_text if formatted_text else raw_text
+
+            # Buscar tracker existente
             existing_tracker = None
 
             # Buscar por texto exacto primero
-            if plate_text in trackers:
-                existing_tracker = trackers[plate_text]
+            if tracking_key in trackers:
+                existing_tracker = trackers[tracking_key]
             else:
                 # Buscar por similitud de texto y posición
                 for tracked_text, tracker in trackers.items():
-                    if (self._are_plates_similar(plate_text, tracked_text) and
+                    if (self._are_plates_similar(tracking_key, tracked_text) and
                             tracker.is_similar_position(bbox)):
                         existing_tracker = tracker
                         break
 
             if existing_tracker:
                 # Actualizar tracker existente
-                existing_tracker.update(confidence, frame_num, bbox, is_six_char)
-                logger.debug(f"✅ Placa actualizada: {plate_text} (Frame: {frame_num}, 6chars: {is_six_char})")
+                existing_tracker.update(confidence, frame_num, bbox, is_six_char, auto_formatted)
+                logger.debug(f"✅ Placa actualizada: '{raw_text}' -> '{formatted_text}' "
+                             f"(Frame: {frame_num}, 6chars: {is_six_char}, auto: {auto_formatted})")
             else:
                 # Crear nuevo tracker
-                trackers[plate_text] = PlateTracker(
-                    plate_text=plate_text,
+                trackers[tracking_key] = PlateTracker(
+                    plate_text=formatted_text,
+                    raw_plate_text=raw_text,  # ✅ NUEVO
                     best_confidence=confidence,
                     best_frame=frame_num,
                     detection_count=1,
                     first_seen=frame_num,
                     last_seen=frame_num,
-                    is_six_char_valid=is_six_char  # ✅ NUEVO
+                    is_six_char_valid=is_six_char,  # ✅ NUEVO
+                    auto_formatted=auto_formatted  # ✅ NUEVO
                 )
-                trackers[plate_text].update(confidence, frame_num, bbox, is_six_char)
-                logger.debug(f"🆕 Nueva placa detectada: {plate_text} (Frame: {frame_num}, 6chars: {is_six_char})")
+                trackers[tracking_key].update(confidence, frame_num, bbox, is_six_char, auto_formatted)
+                logger.debug(f"🆕 Nueva placa: '{raw_text}' -> '{formatted_text}' "
+                             f"(Frame: {frame_num}, 6chars: {is_six_char}, auto: {auto_formatted})")
 
     def _extract_unique_plates_enhanced(self, trackers: Dict[str, PlateTracker]) -> List[Dict[str, Any]]:
-        """✅ ACTUALIZADO: Extrae placas únicas con información de 6 caracteres"""
+        """✅ ACTUALIZADO: Extrae placas únicas con información de 6 caracteres y formateo"""
         unique_plates = []
 
         for plate_text, tracker in trackers.items():
@@ -437,7 +488,8 @@ class VideoService:
                     tracker.confidences) > 1 and np.mean(tracker.confidences) > 0 else 0.5
 
                 plate_result = {
-                    "plate_text": tracker.plate_text,
+                    "plate_text": tracker.plate_text,  # ✅ CON GUIÓN
+                    "raw_plate_text": tracker.raw_plate_text,  # ✅ SIN GUIÓN
                     "best_confidence": tracker.best_confidence,
                     "detection_count": tracker.detection_count,
                     "first_seen_frame": tracker.first_seen,
@@ -445,25 +497,27 @@ class VideoService:
                     "best_frame": tracker.best_frame,
                     "is_valid_format": self._validate_plate_format(tracker.plate_text),
                     "is_six_char_valid": tracker.is_six_char_valid,  # ✅ NUEVO
+                    "auto_formatted": tracker.auto_formatted,  # ✅ NUEVO
                     "avg_confidence": round(avg_confidence, 3),
                     "stability_score": round(stability_score, 3),
                     "duration_frames": tracker.last_seen - tracker.first_seen + 1,
-                    "char_count": len(tracker.plate_text.replace('-', '').replace(' ', '')),  # ✅ NUEVO
-                    "processing_method": "roi_enhanced"  # ✅ MARCADOR
+                    "char_count": len(tracker.raw_plate_text) if tracker.raw_plate_text else 0,  # ✅ CONTAR SIN GUIÓN
+                    "processing_method": "roi_enhanced_6chars_no_dash"  # ✅ MARCADOR ACTUALIZADO
                 }
                 unique_plates.append(plate_result)
 
+                # ✅ LOG MEJORADO
                 status_indicator = "✅" if tracker.is_six_char_valid else "❌"
-                logger.info(f"📋 Placa confirmada: '{tracker.plate_text}' {status_indicator} "
+                auto_indicator = "🔧" if tracker.auto_formatted else ""
+
+                logger.info(f"📋 Placa confirmada: '{tracker.raw_plate_text}' -> '{tracker.plate_text}' "
+                            f"{status_indicator}{auto_indicator} "
                             f"(Detecciones: {tracker.detection_count}, "
-                            f"Confianza: {tracker.best_confidence:.3f}, "
-                            f"6chars: {tracker.is_six_char_valid})")
+                            f"Confianza: {tracker.best_confidence:.3f})")
 
         # Ordenar por: 1) Validez de 6 chars, 2) Confianza
         unique_plates.sort(key=lambda x: (x["is_six_char_valid"], x["best_confidence"]), reverse=True)
         return unique_plates
-
-    # ... [resto de métodos sin cambios] ...
 
     def _get_video_info(self, video_path: str) -> Optional[Dict[str, Any]]:
         """Obtiene información detallada del video"""
@@ -499,7 +553,7 @@ class VideoService:
         if not text1 or not text2:
             return False
 
-        # Normalizar textos
+        # Normalizar textos (sin guión y espacios)
         text1 = text1.upper().replace('-', '').replace(' ', '')
         text2 = text2.upper().replace('-', '').replace(' ', '')
 
@@ -516,13 +570,12 @@ class VideoService:
         return similarity >= threshold
 
     def _validate_plate_format(self, plate_text: str) -> bool:
-        """Valida formato de placa peruana"""
+        """Valida formato de placa peruana (con guión)"""
         import re
         patterns = [
             r'^[A-Z]{3}-\d{3}$',  # ABC-123
             r'^[A-Z]{2}-\d{4}$',  # AB-1234
             r'^[A-Z]\d{2}-\d{3}$',  # A12-345
-            r'^[A-Z]{3}\d{3}$',  # ABC123 (sin guión)
         ]
         return any(re.match(pattern, plate_text) for pattern in patterns)
 
@@ -543,6 +596,7 @@ class VideoService:
 
         valid_plates = [p for p in unique_plates if p['is_valid_format']]
         six_char_plates = [p for p in unique_plates if p.get('is_six_char_valid', False)]
+        auto_formatted_plates = [p for p in unique_plates if p.get('auto_formatted', False)]
         best_plate = unique_plates[0]
 
         message = f"Se detectaron {len(unique_plates)} placa(s) única(s). "
@@ -550,12 +604,26 @@ class VideoService:
         if six_char_plates:
             message += f"{len(six_char_plates)} con 6 caracteres válidos. "
 
-        message += f"Mejor: '{best_plate['plate_text']}' " \
-                   f"(Confianza: {best_plate['best_confidence']:.3f}, " \
+        if auto_formatted_plates:
+            message += f"{len(auto_formatted_plates)} auto-formateadas. "
+
+        # ✅ MOSTRAR TANTO TEXTO RAW COMO FORMATEADO
+        raw_text = best_plate.get('raw_plate_text', '')
+        formatted_text = best_plate['plate_text']
+
+        if raw_text and raw_text != formatted_text:
+            message += f"Mejor: '{raw_text}' → '{formatted_text}' "
+        else:
+            message += f"Mejor: '{formatted_text}' "
+
+        message += f"(Confianza: {best_plate['best_confidence']:.3f}, " \
                    f"Detecciones: {best_plate['detection_count']}"
 
         if best_plate.get('is_six_char_valid'):
             message += ", ✅ 6 chars"
+
+        if best_plate.get('auto_formatted'):
+            message += ", 🔧 auto"
 
         message += ")"
 
@@ -567,45 +635,88 @@ class VideoService:
             unique_plates: List[Dict[str, Any]],
             result_id: str
     ) -> Dict[str, str]:
-        """Guarda los frames con mejores detecciones"""
+        """✅ ACTUALIZADO: Guarda frames con visualización de ROI y crops"""
         frame_urls = {}
 
         try:
             cap = cv2.VideoCapture(video_path)
 
-            for i, plate in enumerate(unique_plates[:5]):  # Máximo 5 mejores placas
+            for i, plate in enumerate(unique_plates[:5]):
                 try:
-                    # best_frame es solo el número
                     best_frame_num = plate.get('best_frame', 0)
-
-                    # Ir al frame con mejor detección
                     cap.set(cv2.CAP_PROP_POS_FRAMES, best_frame_num)
                     ret, frame = cap.read()
 
                     if ret:
-                        # Convertir a RGB
                         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                        # Guardar frame
+                        # ✅ CREAR VISUALIZACIÓN CON ROI Y CROPS
+                        # Simular detección para visualización
+                        mock_detection = [{
+                            "plate_bbox": [100, 100, 200, 150],  # Esto debería venir de la detección real
+                            "plate_text": plate["plate_text"],
+                            "raw_plate_text": plate.get("raw_plate_text", ""),
+                            "six_char_validated": plate.get("is_six_char_valid", False),
+                            "auto_formatted": plate.get("auto_formatted", False),
+                            "overall_confidence": plate["best_confidence"]
+                        }]
+
+                        # Aplicar visualización
+                        visualized_frame = self._create_frame_visualization(frame_rgb, mock_detection)
+
+                        # Usar texto raw para nombre de archivo
+                        raw_text = plate.get('raw_plate_text', plate['plate_text'])
+                        safe_filename = raw_text.replace('-', '_').replace(' ', '_')
+
                         frame_path = await self.file_service.save_result_image(
-                            frame_rgb,
+                            visualized_frame,
                             result_id,
-                            f"best_frame_{i + 1}_{plate['plate_text'].replace('-', '_')}"
+                            f"best_frame_{i + 1}_{safe_filename}_visualized"
                         )
 
                         frame_urls[f"best_frame_{i + 1}"] = self.file_service.get_file_url(frame_path)
-
-                        logger.info(f"💾 Frame guardado: {plate['plate_text']} (Frame: {best_frame_num})")
+                        logger.info(f"💾 Frame visualizado guardado: '{raw_text}' -> '{plate['plate_text']}'")
 
                 except Exception as e:
-                    logger.warning(f"⚠️ Error guardando frame para placa {plate['plate_text']}: {str(e)}")
+                    logger.warning(f"⚠️ Error guardando frame visualizado: {str(e)}")
 
             cap.release()
 
         except Exception as e:
-            logger.warning(f"⚠️ Error guardando frames: {str(e)}")
+            logger.warning(f"⚠️ Error guardando frames visualizados: {str(e)}")
 
         return frame_urls
+
+    def _create_frame_visualization(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
+        """✅ NUEVO: Crea visualización completa del frame"""
+        try:
+            # Usar el pipeline mejorado para crear visualización
+            mock_result = {
+                "use_roi": True,
+                "roi_coords": self._calculate_roi_coords(frame.shape),
+                "final_results": detections
+            }
+
+            return self.enhanced_pipeline.create_visualization(frame, mock_result)
+
+        except Exception as e:
+            logger.debug(f"Error creando visualización: {e}")
+            return frame
+
+    def _calculate_roi_coords(self, image_shape) -> Dict[str, int]:
+        """✅ NUEVO: Calcula coordenadas del ROI para visualización"""
+        height, width = image_shape[:2]
+        roi_width = int(width * 0.6)
+        roi_height = int(height * 0.6)
+
+        return {
+            "x_start": (width - roi_width) // 2,
+            "y_start": (height - roi_height) // 2,
+            "x_end": (width + roi_width) // 2,
+            "y_end": (height + roi_height) // 2,
+            "width": roi_width,
+            "height": roi_height
+        }
 
 
 # Instancia global del servicio

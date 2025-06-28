@@ -1,8 +1,9 @@
 """
-Pipeline mejorado que integra ROI + Filtros + tu utils.py existente
+Pipeline mejorado ajustado para modelos que detectan 6 caracteres sin guión
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List  # ✅ AGREGADO List
 import numpy as np
+import cv2  # ✅ AGREGADO para visualización
 from loguru import logger
 from core.utils import PerformanceTimer  # ✅ USA TU CLASE EXISTENTE
 from .plate_filters import PlateValidator
@@ -11,14 +12,14 @@ from .roi_processor import ROIProcessor
 
 class EnhancedALPRPipeline:
     """
-    Pipeline ALPR mejorado que integra todas las funcionalidades
+    Pipeline ALPR ajustado para modelos de 6 caracteres sin guión
     """
 
     def __init__(self, model_manager):
         self.model_manager = model_manager
         self.plate_validator = PlateValidator()
-        self.roi_processor = ROIProcessor(roi_percentage=10.0)
-        logger.info("🚀 EnhancedALPRPipeline inicializado")
+        self.roi_processor = ROIProcessor(roi_percentage=90.0)
+        logger.info("🚀 EnhancedALPRPipeline inicializado para modelos de 6 caracteres sin guión")
 
     def process_with_enhancements(
             self,
@@ -29,19 +30,13 @@ class EnhancedALPRPipeline:
             **kwargs
     ) -> Dict[str, Any]:
         """
-        Procesa imagen con todas las mejoras integradas
-
-        Args:
-            image_input: Imagen de entrada
-            use_roi: Si usar ROI central (para video/streaming)
-            filter_six_chars: Si filtrar por 6 caracteres exactos
-            return_stats: Si incluir estadísticas detalladas
+        ✅ CORREGIDO: Procesa imagen esperando exactamente 6 caracteres del modelo
         """
 
-        with PerformanceTimer(f"Pipeline {'con ROI' if use_roi else 'completo'}"):
+        with PerformanceTimer(f"Pipeline {'con ROI' if use_roi else 'completo'} - 6 chars sin guión"):
             try:
                 logger.info(f"🔄 Procesando {'con ROI' if use_roi else 'imagen completa'} "
-                            f"{'+ filtro 6 chars' if filter_six_chars else ''}")
+                            f"{'+ filtro 6 chars (sin guión)' if filter_six_chars else ''}")
 
                 # Preprocesar imagen
                 image = self.model_manager.plate_detector.preprocess_image(image_input)
@@ -55,7 +50,8 @@ class EnhancedALPRPipeline:
                 # Aplicar ROI si se solicita
                 if use_roi:
                     processing_image, roi_coords = self.roi_processor.extract_roi(image)
-                    logger.info(f"🎯 Procesando ROI de {roi_coords['width']}x{roi_coords['height']}")
+                    logger.info(f"🎯 ROI aplicado: {roi_coords['width']}x{roi_coords['height']} "
+                                f"({self.roi_processor.roi_percentage}% del total)")
 
                     if return_stats:
                         roi_stats = self.roi_processor.get_roi_statistics((image.shape[0], image.shape[1]))
@@ -71,9 +67,9 @@ class EnhancedALPRPipeline:
 
                 # Paso 2: Procesar cada placa detectada
                 final_results = []
-                validation_stats = {"total_plates": 0, "six_char_valid": 0, "filtered_out": 0}
+                validation_stats = {"total_plates": 0, "six_char_valid": 0, "filtered_out": 0, "auto_formatted": 0}
 
-                with PerformanceTimer("Reconocimiento de caracteres"):
+                with PerformanceTimer("Reconocimiento de caracteres (6 chars sin guión)"):
                     for i, plate_info in enumerate(plate_results["plates"]):
                         try:
                             # Extraer región de la placa
@@ -88,22 +84,35 @@ class EnhancedALPRPipeline:
 
                             validation_stats["total_plates"] += 1
 
+                            # ✅ NUEVO: Procesar texto crudo (6 caracteres sin guión)
+                            raw_plate_text = char_results.get("plate_text", "")
+
+                            logger.debug(f"🔤 Texto crudo del modelo: '{raw_plate_text}'")
+
                             # Aplicar filtro de 6 caracteres si se solicita
                             if filter_six_chars:
-                                validation = self.plate_validator.validate_six_characters_only(
-                                    char_results.get("plate_text", "")
-                                )
+                                validation = self.plate_validator.validate_six_characters_only(raw_plate_text)
 
                                 if not validation["is_valid"]:
                                     validation_stats["filtered_out"] += 1
-                                    logger.debug(f"❌ Placa rechazada por filtro: {char_results.get('plate_text', '')} "
-                                                 f"- {validation['reason']}")
+                                    logger.debug(f"❌ Placa rechazada: '{raw_plate_text}' - {validation['reason']}")
                                     continue
 
-                                # Actualizar texto limpio
-                                char_results["plate_text"] = validation["clean_text"]
+                                # ✅ USAR TEXTO FORMATEADO (con guión agregado automáticamente)
+                                formatted_text = validation["formatted_text"]
+                                char_results["plate_text"] = formatted_text
+                                char_results["raw_plate_text"] = validation["clean_text"]  # Original
                                 char_results["validation_info"] = validation
+                                char_results["auto_formatted"] = True
+
                                 validation_stats["six_char_valid"] += 1
+                                validation_stats["auto_formatted"] += 1
+
+                                logger.info(f"✅ Placa formateada: '{validation['clean_text']}' -> '{formatted_text}'")
+                            else:
+                                # Sin filtro, usar texto tal como viene
+                                char_results["raw_plate_text"] = raw_plate_text
+                                char_results["auto_formatted"] = False
 
                             # Combinar resultados
                             combined_result = {
@@ -113,13 +122,17 @@ class EnhancedALPRPipeline:
                                 "plate_area": plate_info["area"],
                                 "character_recognition": char_results,
                                 "plate_text": char_results.get("plate_text", ""),
+                                "raw_plate_text": char_results.get("raw_plate_text", ""),  # ✅ NUEVO
                                 "overall_confidence": self._calculate_combined_confidence(
                                     plate_info["confidence"],
                                     char_results.get("confidence", 0.0)
                                 ),
                                 "is_valid_plate": char_results.get("is_valid_format", False),
-                                "six_char_validated": filter_six_chars,
-                                "processing_method": "roi" if use_roi else "full_image"
+                                "six_char_validated": filter_six_chars and validation_stats["six_char_valid"] > 0,
+                                "auto_formatted": char_results.get("auto_formatted", False),  # ✅ NUEVO
+                                "validation_info": char_results.get("validation_info", {}),  # ✅ NUEVO
+                                "processing_method": "roi" if use_roi else "full_image",
+                                "model_output": raw_plate_text  # ✅ GUARDAR OUTPUT ORIGINAL
                             }
 
                             final_results.append(combined_result)
@@ -153,7 +166,13 @@ class EnhancedALPRPipeline:
                         "plates_with_text": len(final_results),
                         "valid_plates": len([r for r in final_results if r["is_valid_plate"]]),
                         "six_char_filter_applied": filter_six_chars,
+                        "auto_formatted_plates": validation_stats["auto_formatted"],  # ✅ NUEVO
                         "validation_stats": validation_stats
+                    },
+                    "model_info": {  # ✅ INFORMACIÓN DEL MODELO
+                        "expects_six_chars": True,
+                        "detects_dash": False,
+                        "auto_formatting": filter_six_chars
                     }
                 }
 
@@ -167,9 +186,19 @@ class EnhancedALPRPipeline:
                         "enhancement_flags": {
                             "roi_enabled": use_roi,
                             "six_char_filter": filter_six_chars,
+                            "auto_dash_formatting": filter_six_chars,  # ✅ NUEVO
                             "stats_requested": return_stats
                         }
                     }
+
+                # ✅ LOG MEJORADO
+                if final_results:
+                    best = final_results[0]
+                    logger.success(f"✅ Pipeline completado: {len(final_results)} placa(s). "
+                                 f"Mejor: '{best.get('raw_plate_text', '')}' -> '{best['plate_text']}' "
+                                 f"(Confianza: {best['overall_confidence']:.3f})")
+                else:
+                    logger.info("📭 No se detectaron placas válidas")
 
                 return result
 
@@ -179,7 +208,12 @@ class EnhancedALPRPipeline:
                     "success": False,
                     "message": f"Error en pipeline: {str(e)}",
                     "use_roi": use_roi,
-                    "final_results": []
+                    "final_results": [],
+                    "model_info": {
+                        "expects_six_chars": True,
+                        "detects_dash": False,
+                        "auto_formatting": filter_six_chars
+                    }
                 }
 
     def _create_empty_result(self, use_roi: bool, roi_coords: Optional[Dict], roi_stats: Optional[Dict],
@@ -193,6 +227,11 @@ class EnhancedALPRPipeline:
             "filter_six_chars": filter_six_chars,
             "plate_detection": None,
             "final_results": [],
+            "model_info": {
+                "expects_six_chars": True,
+                "detects_dash": False,
+                "auto_formatting": filter_six_chars
+            },
             "detailed_stats": {
                 "roi_stats": roi_stats,
                 "validation_detailed": None,
@@ -211,7 +250,7 @@ class EnhancedALPRPipeline:
             show_roi: bool = True
     ) -> np.ndarray:
         """
-        Crea visualización completa usando tu lógica existente + nuevas características
+        Crea visualización completa con información de formateo automático
         """
         try:
             # Preprocesar imagen
