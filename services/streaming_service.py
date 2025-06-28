@@ -207,15 +207,22 @@ class StreamingVideoProcessor:
     """Procesador principal de video con ROI central y filtro de 6 caracteres SIN guión"""
 
     def __init__(self):
+        """✅ CORREGIDO: Constructor con validación mejorada"""
         self.model_manager = model_manager
         self.file_service = file_service
-        # ✅ INICIALIZAR PIPELINE MEJORADO
         self.enhanced_pipeline = EnhancedALPRPipeline(model_manager)
         self.quality_managers: Dict[str, AdaptiveQualityManager] = {}
         self.detection_trackers: Dict[str, StreamingDetectionTracker] = {}
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="streaming_processor")
         self.streaming_config = settings.get_streaming_config()
-        logger.info("🎬 StreamingVideoProcessor inicializado para modelos de 6 caracteres SIN guión")
+
+        # ✅ CONFIGURACIÓN PARA STREAMING CONTINUO
+        self.force_continuous_streaming = True  # NUEVO flag
+        self.min_frame_quality = 25  # Calidad mínima para mantener fluidez
+        self.max_frame_quality = 85  # Calidad máxima para optimizar bandwidth
+
+        logger.info("🎬 StreamingVideoProcessor inicializado para streaming CONTINUO")
+        logger.info("✅ Configuración: streaming_continuo=True, calidad_min=25, calidad_max=85")
 
     async def start_video_streaming(
             self,
@@ -573,13 +580,13 @@ class StreamingVideoProcessor:
             fps: float,
             processing_params: Dict[str, Any]
     ) -> StreamingFrame:
-        """✅ ACTUALIZADO: Procesa un frame con ROI central y filtro de 6 caracteres SIN guión"""
+        """✅ CORREGIDO: Procesa un frame SIEMPRE generando imagen para streaming continuo"""
 
         start_time = time.time()
         quality_manager = self.quality_managers[session_id]
 
         try:
-            confidence_threshold = processing_params.get("confidence_threshold", 0.25)  # ✅ MÁS PERMISIVO
+            confidence_threshold = processing_params.get("confidence_threshold", 0.25)
             iou_threshold = processing_params.get("iou_threshold", 0.4)
 
             # Verificar que el frame es válido
@@ -602,7 +609,6 @@ class StreamingVideoProcessor:
             if pipeline_result.get("success") and pipeline_result.get("final_results"):
                 for i, plate_result in enumerate(pipeline_result["final_results"]):
                     try:
-                        # ✅ USAR TEXTO FORMATEADO (con guión) y raw (sin guión)
                         formatted_text = plate_result.get("plate_text", "")
                         raw_text = plate_result.get("raw_plate_text", "")
 
@@ -619,21 +625,21 @@ class StreamingVideoProcessor:
                                 "detection_id": f"{session_id}_{frame_num}_{i}",
                                 "frame_num": frame_num,
                                 "timestamp": frame_num / fps,
-                                "plate_text": formatted_text,  # ✅ TEXTO CON GUIÓN
-                                "raw_plate_text": raw_text,  # ✅ TEXTO SIN GUIÓN (como detecta el modelo)
+                                "plate_text": formatted_text,
+                                "raw_plate_text": raw_text,
                                 "plate_confidence": float(plate_result.get("plate_confidence", 0.0)),
                                 "char_confidence": float(
                                     plate_result.get("character_recognition", {}).get("confidence", 0.0)),
                                 "overall_confidence": float(plate_result.get("overall_confidence", 0.0)),
                                 "plate_bbox": list(plate_result.get("plate_bbox", [0, 0, 0, 0])),
                                 "is_valid_plate": bool(plate_result.get("is_valid_plate", False)),
-                                "six_char_validated": is_six_char,  # ✅ CAMPO EXISTENTE
-                                "auto_formatted": auto_formatted,  # ✅ NUEVO
-                                "validation_info": plate_result.get("validation_info", {}),  # ✅ CAMPO EXISTENTE
-                                "char_count": len(raw_text) if raw_text else 0,  # ✅ CONTAR SIN GUIÓN
+                                "six_char_validated": is_six_char,
+                                "auto_formatted": auto_formatted,
+                                "validation_info": plate_result.get("validation_info", {}),
+                                "char_count": len(raw_text) if raw_text else 0,
                                 "bbox_area": self._calculate_bbox_area_safe(
                                     plate_result.get("plate_bbox", [0, 0, 0, 0])),
-                                "processing_method": "roi_enhanced_6chars_no_dash"  # ✅ MARCADOR ACTUALIZADO
+                                "processing_method": "roi_enhanced_6chars_no_dash"
                             }
                             detections.append(detection)
 
@@ -644,31 +650,74 @@ class StreamingVideoProcessor:
             else:
                 logger.debug(f"🔍 [FRAME] Sin resultados válidos en pipeline")
 
-            # Generar imagen para streaming (cada 15 frames o si hay detecciones)
+            # ✅ CORRECCIÓN CRÍTICA: SIEMPRE generar imagen para streaming continuo
             frame_base64 = None
             frame_small_base64 = None
             compressed_size = 0
             quality_used = quality_manager.current_quality
 
             try:
-                if detections or frame_num % 15 == 0:
-                    # Crear frame con detecciones dibujadas (mejorado)
-                    annotated_frame = self._draw_detections_enhanced_on_frame_safe(frame, detections)
+                # ❌ ANTES (PROBLEMÁTICO):
+                # if detections or frame_num % 15 == 0:
 
-                    # Codificar frame principal
+                # ✅ AHORA (CORREGIDO): SIEMPRE generar imagen
+                logger.debug(f"🎬 [FRAME] Generando imagen para frame {frame_num} (streaming continuo)")
+
+                # Crear frame con detecciones dibujadas (mejorado)
+                annotated_frame = self._draw_detections_enhanced_on_frame_safe(frame, detections)
+
+                # ✅ OPTIMIZACIÓN: Ajustar calidad según presencia de detecciones
+                if detections:
+                    # Frame con detecciones: mantener o mejorar calidad
+                    quality_manager.current_quality = min(85, quality_manager.current_quality + 2)
+                    logger.debug(
+                        f"📸 [FRAME] Frame con detecciones - calidad aumentada: {quality_manager.current_quality}")
+                else:
+                    # Frame sin detecciones: reducir ligeramente la calidad para optimizar
+                    quality_manager.current_quality = max(35, quality_manager.current_quality - 1)
+                    logger.debug(
+                        f"📸 [FRAME] Frame sin detecciones - calidad optimizada: {quality_manager.current_quality}")
+
+                # Codificar frame principal SIEMPRE
+                frame_base64, compressed_size, quality_used = self._encode_frame_adaptive_safe(
+                    annotated_frame, quality_manager
+                )
+
+                # Verificar que la codificación fue exitosa
+                if not frame_base64:
+                    logger.warning(f"⚠️ [FRAME] Frame {frame_num}: codificación falló, reintentando...")
+                    # Reintentar con calidad más baja
+                    quality_manager.current_quality = max(25, quality_manager.current_quality - 10)
                     frame_base64, compressed_size, quality_used = self._encode_frame_adaptive_safe(
                         annotated_frame, quality_manager
                     )
 
-                    # Crear thumbnail pequeño
-                    frame_small_base64 = self._create_frame_thumbnail_safe(annotated_frame)
+                # Crear thumbnail pequeño
+                frame_small_base64 = self._create_frame_thumbnail_safe(annotated_frame)
 
-                    # Actualizar calidad adaptativa
-                    processing_time = time.time() - start_time
-                    quality_manager.adjust_quality(processing_time, compressed_size or 0)
+                # Actualizar calidad adaptativa
+                processing_time = time.time() - start_time
+                quality_manager.adjust_quality(processing_time, compressed_size or 0)
+
+                # ✅ LOG DE CONFIRMACIÓN
+                logger.debug(f"✅ [FRAME] Frame {frame_num} codificado exitosamente: "
+                             f"{len(frame_base64)} chars, calidad: {quality_used}, "
+                             f"tamaño: {compressed_size} bytes")
 
             except Exception as encode_error:
-                logger.warning(f"⚠️ [FRAME] Error codificando frame {frame_num}: {str(encode_error)}")
+                logger.error(f"❌ [FRAME] Error CRÍTICO codificando frame {frame_num}: {str(encode_error)}")
+                # En caso de error crítico, al menos intentar un frame básico
+                try:
+                    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 30]  # Calidad muy baja como fallback
+                    success, buffer = cv2.imencode('.jpg', frame_bgr, encode_param)
+                    if success:
+                        frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                        compressed_size = len(buffer)
+                        quality_used = 30
+                        logger.warning(f"⚠️ [FRAME] Fallback aplicado para frame {frame_num}")
+                except Exception as fallback_error:
+                    logger.error(f"❌ [FRAME] Fallback también falló: {str(fallback_error)}")
 
             processing_time = time.time() - start_time
 
@@ -683,22 +732,34 @@ class StreamingVideoProcessor:
                 compressed_size=compressed_size,
                 quality_used=quality_used,
                 success=True,
-                # ✅ CAMPOS ACTUALIZADOS
                 roi_used=True,
                 six_char_filter_applied=True,
                 six_char_detections_count=six_char_count,
-                auto_formatted_count=auto_formatted_count  # ✅ NUEVO
+                auto_formatted_count=auto_formatted_count
             )
 
         except Exception as e:
             processing_time = time.time() - start_time
-            logger.warning(f"⚠️ [FRAME] Error procesando frame {frame_num}: {str(e)}")
+            logger.error(f"❌ [FRAME] Error CRÍTICO procesando frame {frame_num}: {str(e)}")
+
+            # ✅ INCLUSO EN ERROR, intentar generar frame básico para mantener streaming
+            fallback_frame_base64 = ""
+            try:
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 20]
+                success, buffer = cv2.imencode('.jpg', frame_bgr, encode_param)
+                if success:
+                    fallback_frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                    logger.warning(f"⚠️ [FRAME] Frame de error generado para {frame_num}")
+            except:
+                logger.error(f"❌ [FRAME] No se pudo generar ni frame de error para {frame_num}")
 
             return StreamingFrame(
                 frame_num=frame_num,
                 timestamp=frame_num / fps,
                 processing_time=processing_time,
                 detections=[],
+                frame_image_base64=fallback_frame_base64,  # ✅ Incluir incluso en error
                 success=False,
                 error=str(e),
                 roi_used=True,
@@ -1069,13 +1130,223 @@ class StreamingVideoProcessor:
         except Exception as e:
             logger.warning(f"⚠️ [INITIAL] Error enviando actualización inicial: {str(e)}")
 
+    """
+    CORRECCIÓN CRÍTICA para services/streaming_service.py
+    Fix del bug de video "congelado" en streaming en tiempo real
+
+    PROBLEMA: El backend solo envía frame_data ocasionalmente, causando video intermitente
+    SOLUCIÓN: Asegurar que CADA mensaje de streaming_update incluya la imagen del frame
+    """
+
+    # ✅ CORRECCIÓN 1: Método _process_single_frame_enhanced_safe()
+    # Líneas aproximadas 580-600
+
+    async def _process_single_frame_enhanced_safe(
+            self,
+            session_id: str,
+            frame: np.ndarray,
+            frame_num: int,
+            fps: float,
+            processing_params: Dict[str, Any]
+    ) -> StreamingFrame:
+        """✅ CORREGIDO: Procesa un frame SIEMPRE generando imagen para streaming continuo"""
+
+        start_time = time.time()
+        quality_manager = self.quality_managers[session_id]
+
+        try:
+            confidence_threshold = processing_params.get("confidence_threshold", 0.25)
+            iou_threshold = processing_params.get("iou_threshold", 0.4)
+
+            # Verificar que el frame es válido
+            if frame is None or frame.size == 0:
+                raise Exception("Frame inválido o vacío")
+
+            # ✅ PROCESAR CON PIPELINE MEJORADO EN EXECUTOR
+            loop = asyncio.get_event_loop()
+            pipeline_result = await loop.run_in_executor(
+                self.executor,
+                self._process_frame_enhanced_sync_safe,
+                frame, confidence_threshold, iou_threshold
+            )
+
+            # Extraer detecciones con validación mejorada
+            detections = []
+            six_char_count = 0
+            auto_formatted_count = 0
+
+            if pipeline_result.get("success") and pipeline_result.get("final_results"):
+                for i, plate_result in enumerate(pipeline_result["final_results"]):
+                    try:
+                        formatted_text = plate_result.get("plate_text", "")
+                        raw_text = plate_result.get("raw_plate_text", "")
+
+                        if formatted_text or raw_text:
+                            is_six_char = plate_result.get("six_char_validated", False)
+                            auto_formatted = plate_result.get("auto_formatted", False)
+
+                            if is_six_char:
+                                six_char_count += 1
+                            if auto_formatted:
+                                auto_formatted_count += 1
+
+                            detection = {
+                                "detection_id": f"{session_id}_{frame_num}_{i}",
+                                "frame_num": frame_num,
+                                "timestamp": frame_num / fps,
+                                "plate_text": formatted_text,
+                                "raw_plate_text": raw_text,
+                                "plate_confidence": float(plate_result.get("plate_confidence", 0.0)),
+                                "char_confidence": float(
+                                    plate_result.get("character_recognition", {}).get("confidence", 0.0)),
+                                "overall_confidence": float(plate_result.get("overall_confidence", 0.0)),
+                                "plate_bbox": list(plate_result.get("plate_bbox", [0, 0, 0, 0])),
+                                "is_valid_plate": bool(plate_result.get("is_valid_plate", False)),
+                                "six_char_validated": is_six_char,
+                                "auto_formatted": auto_formatted,
+                                "validation_info": plate_result.get("validation_info", {}),
+                                "char_count": len(raw_text) if raw_text else 0,
+                                "bbox_area": self._calculate_bbox_area_safe(
+                                    plate_result.get("plate_bbox", [0, 0, 0, 0])),
+                                "processing_method": "roi_enhanced_6chars_no_dash"
+                            }
+                            detections.append(detection)
+
+                            logger.debug(f"✅ [FRAME] Placa detectada: '{raw_text}' -> '{formatted_text}' "
+                                         f"(6chars: {is_six_char}, auto: {auto_formatted})")
+                    except Exception as det_error:
+                        logger.warning(f"⚠️ [FRAME] Error procesando detección {i}: {str(det_error)}")
+            else:
+                logger.debug(f"🔍 [FRAME] Sin resultados válidos en pipeline")
+
+            # ✅ CORRECCIÓN CRÍTICA: SIEMPRE generar imagen para streaming continuo
+            frame_base64 = None
+            frame_small_base64 = None
+            compressed_size = 0
+            quality_used = quality_manager.current_quality
+
+            try:
+                # ❌ ANTES (PROBLEMÁTICO):
+                # if detections or frame_num % 15 == 0:
+
+                # ✅ AHORA (CORREGIDO): SIEMPRE generar imagen
+                logger.debug(f"🎬 [FRAME] Generando imagen para frame {frame_num} (streaming continuo)")
+
+                # Crear frame con detecciones dibujadas (mejorado)
+                annotated_frame = self._draw_detections_enhanced_on_frame_safe(frame, detections)
+
+                # ✅ OPTIMIZACIÓN: Ajustar calidad según presencia de detecciones
+                if detections:
+                    # Frame con detecciones: mantener o mejorar calidad
+                    quality_manager.current_quality = min(85, quality_manager.current_quality + 2)
+                    logger.debug(
+                        f"📸 [FRAME] Frame con detecciones - calidad aumentada: {quality_manager.current_quality}")
+                else:
+                    # Frame sin detecciones: reducir ligeramente la calidad para optimizar
+                    quality_manager.current_quality = max(35, quality_manager.current_quality - 1)
+                    logger.debug(
+                        f"📸 [FRAME] Frame sin detecciones - calidad optimizada: {quality_manager.current_quality}")
+
+                # Codificar frame principal SIEMPRE
+                frame_base64, compressed_size, quality_used = self._encode_frame_adaptive_safe(
+                    annotated_frame, quality_manager
+                )
+
+                # Verificar que la codificación fue exitosa
+                if not frame_base64:
+                    logger.warning(f"⚠️ [FRAME] Frame {frame_num}: codificación falló, reintentando...")
+                    # Reintentar con calidad más baja
+                    quality_manager.current_quality = max(25, quality_manager.current_quality - 10)
+                    frame_base64, compressed_size, quality_used = self._encode_frame_adaptive_safe(
+                        annotated_frame, quality_manager
+                    )
+
+                # Crear thumbnail pequeño
+                frame_small_base64 = self._create_frame_thumbnail_safe(annotated_frame)
+
+                # Actualizar calidad adaptativa
+                processing_time = time.time() - start_time
+                quality_manager.adjust_quality(processing_time, compressed_size or 0)
+
+                # ✅ LOG DE CONFIRMACIÓN
+                logger.debug(f"✅ [FRAME] Frame {frame_num} codificado exitosamente: "
+                             f"{len(frame_base64)} chars, calidad: {quality_used}, "
+                             f"tamaño: {compressed_size} bytes")
+
+            except Exception as encode_error:
+                logger.error(f"❌ [FRAME] Error CRÍTICO codificando frame {frame_num}: {str(encode_error)}")
+                # En caso de error crítico, al menos intentar un frame básico
+                try:
+                    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 30]  # Calidad muy baja como fallback
+                    success, buffer = cv2.imencode('.jpg', frame_bgr, encode_param)
+                    if success:
+                        frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                        compressed_size = len(buffer)
+                        quality_used = 30
+                        logger.warning(f"⚠️ [FRAME] Fallback aplicado para frame {frame_num}")
+                except Exception as fallback_error:
+                    logger.error(f"❌ [FRAME] Fallback también falló: {str(fallback_error)}")
+
+            processing_time = time.time() - start_time
+
+            return StreamingFrame(
+                frame_num=frame_num,
+                timestamp=frame_num / fps,
+                processing_time=processing_time,
+                detections=detections,
+                frame_image_base64=frame_base64,
+                frame_small_base64=frame_small_base64,
+                original_size=(frame.shape[1], frame.shape[0]),
+                compressed_size=compressed_size,
+                quality_used=quality_used,
+                success=True,
+                roi_used=True,
+                six_char_filter_applied=True,
+                six_char_detections_count=six_char_count,
+                auto_formatted_count=auto_formatted_count
+            )
+
+        except Exception as e:
+            processing_time = time.time() - start_time
+            logger.error(f"❌ [FRAME] Error CRÍTICO procesando frame {frame_num}: {str(e)}")
+
+            # ✅ INCLUSO EN ERROR, intentar generar frame básico para mantener streaming
+            fallback_frame_base64 = ""
+            try:
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 20]
+                success, buffer = cv2.imencode('.jpg', frame_bgr, encode_param)
+                if success:
+                    fallback_frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                    logger.warning(f"⚠️ [FRAME] Frame de error generado para {frame_num}")
+            except:
+                logger.error(f"❌ [FRAME] No se pudo generar ni frame de error para {frame_num}")
+
+            return StreamingFrame(
+                frame_num=frame_num,
+                timestamp=frame_num / fps,
+                processing_time=processing_time,
+                detections=[],
+                frame_image_base64=fallback_frame_base64,  # ✅ Incluir incluso en error
+                success=False,
+                error=str(e),
+                roi_used=True,
+                six_char_filter_applied=True,
+                six_char_detections_count=0,
+                auto_formatted_count=0
+            )
+
+    # ✅ CORRECCIÓN 2: Método _send_streaming_update_enhanced()
+    # Líneas aproximadas 900-950
+
     async def _send_streaming_update_enhanced(
             self,
             session_id: str,
             streaming_frame: StreamingFrame,
             detection_tracker: StreamingDetectionTracker
     ):
-        """✅ MEJORADO: Envía actualización de streaming con información de 6 caracteres sin guión"""
+        """✅ CORREGIDO: Envía actualización SIEMPRE con frame_data para streaming continuo"""
         try:
             from api.routes.streaming import get_session
 
@@ -1103,7 +1374,7 @@ class StreamingVideoProcessor:
                     "roi_used": streaming_frame.roi_used,
                     "six_char_filter_applied": streaming_frame.six_char_filter_applied,
                     "six_char_detections_in_frame": streaming_frame.six_char_detections_count,
-                    "auto_formatted_detections_in_frame": streaming_frame.auto_formatted_count  # ✅ NUEVO
+                    "auto_formatted_detections_in_frame": streaming_frame.auto_formatted_count
                 },
                 "progress": {
                     "processed_frames": session.processed_frames,
@@ -1117,7 +1388,7 @@ class StreamingVideoProcessor:
                     "elapsed_time": time.time() - session.start_time if session.start_time else 0,
                     "estimated_remaining": self._estimate_remaining_time(session)
                 },
-                "enhancement_stats": {  # ✅ ESTADÍSTICAS ACTUALIZADAS
+                "enhancement_stats": {
                     "roi_processing": True,
                     "six_char_filter_active": True,
                     "auto_dash_formatting": True,
@@ -1129,7 +1400,7 @@ class StreamingVideoProcessor:
                 }
             }
 
-            # Incluir frame si existe
+            # ✅ CORRECCIÓN CRÍTICA: SIEMPRE incluir frame_data
             if streaming_frame.frame_image_base64:
                 update_data["frame_data"] = {
                     "image_base64": streaming_frame.frame_image_base64,
@@ -1138,6 +1409,24 @@ class StreamingVideoProcessor:
                     "compressed_size": streaming_frame.compressed_size,
                     "quality_used": streaming_frame.quality_used
                 }
+                logger.debug(f"✅ [UPDATE] Frame {streaming_frame.frame_num}: frame_data incluido "
+                             f"(tamaño: {len(streaming_frame.frame_image_base64)} chars)")
+            else:
+                # ❌ CASO CRÍTICO: Si no hay imagen, es un ERROR
+                logger.error(f"❌ [UPDATE] CRÍTICO: Frame {streaming_frame.frame_num} sin image_base64! "
+                             f"Esto causará video congelado. Investigar _process_single_frame_enhanced_safe()")
+
+                # ✅ MEDIDA DE EMERGENCIA: Crear frame de placeholder
+                placeholder_frame = self._create_placeholder_frame()
+                if placeholder_frame:
+                    update_data["frame_data"] = {
+                        "image_base64": placeholder_frame,
+                        "thumbnail_base64": placeholder_frame,
+                        "original_size": streaming_frame.original_size or [640, 480],
+                        "compressed_size": len(placeholder_frame),
+                        "quality_used": 30
+                    }
+                    logger.warning(f"⚠️ [UPDATE] Placeholder frame usado para {streaming_frame.frame_num}")
 
             # Incluir información de calidad adaptativa
             if session_id in self.quality_managers:
@@ -1158,10 +1447,38 @@ class StreamingVideoProcessor:
             if not success:
                 logger.warning(f"⚠️ [UPDATE] No se pudo enviar actualización a {session_id}")
             else:
-                logger.debug(f"✅ [UPDATE] Actualización de 6 chars sin guión enviada a {session_id}")
+                # ✅ LOG DE CONFIRMACIÓN DE STREAMING CONTINUO
+                has_frame_data = "frame_data" in update_data
+                image_size = len(update_data.get("frame_data", {}).get("image_base64", ""))
+                logger.debug(f"✅ [UPDATE] Streaming continuo: frame {streaming_frame.frame_num} "
+                             f"enviado (imagen: {has_frame_data}, tamaño: {image_size} chars)")
 
         except Exception as e:
-            logger.error(f"❌ [UPDATE] Error enviando actualización de streaming: {str(e)}")
+            logger.error(f"❌ [UPDATE] Error CRÍTICO enviando actualización de streaming: {str(e)}")
+
+
+    def _create_placeholder_frame(self) -> str:
+        """✅ NUEVO: Crea frame placeholder para casos de emergencia"""
+        try:
+            # Crear imagen simple de 640x480 con texto "Processing..."
+            placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+            placeholder.fill(32)  # Gris oscuro
+
+            # Agregar texto
+            cv2.putText(placeholder, "Processing Frame...", (200, 240),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+            # Codificar a base64
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 30]
+            success, buffer = cv2.imencode('.jpg', placeholder, encode_param)
+
+            if success:
+                return base64.b64encode(buffer).decode('utf-8')
+
+        except Exception as e:
+            logger.error(f"❌ Error creando placeholder frame: {str(e)}")
+
+        return ""
 
     async def _finalize_streaming_enhanced(self, session_id: str, detection_tracker: StreamingDetectionTracker):
         """✅ MEJORADO: Finaliza el streaming con resumen completo de 6 chars sin guión"""
