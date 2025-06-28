@@ -6,14 +6,22 @@ from loguru import logger
 from models.model_manager import model_manager
 from services.file_service import file_service
 from core.utils import PerformanceTimer
+from config.settings import settings
 
 
 class DetectionService:
-    """Servicio principal para detección y reconocimiento de placas"""
+    """Servicio principal para detección y reconocimiento de placas con configuración centralizada"""
 
     def __init__(self):
         self.model_manager = model_manager
         self.file_service = file_service
+
+        # Obtener configuraciones centralizadas
+        self.image_config = settings.get_image_detection_config()
+        self.validation_config = settings.get_validation_config()
+
+        logger.info("🔍 DetectionService inicializado con configuración centralizada")
+        logger.debug(f"📊 Config imágenes: {self.image_config}")
 
     async def process_image(
             self,
@@ -23,14 +31,7 @@ class DetectionService:
     ) -> Dict[str, Any]:
         """
         Procesa una imagen completa con el pipeline de detección + reconocimiento
-
-        Args:
-            file_path: Ruta de la imagen a procesar
-            file_info: Información del archivo
-            request_params: Parámetros de la solicitud
-
-        Returns:
-            Dict con todos los resultados
+        usando configuración centralizada con fallbacks inteligentes
         """
         start_time = time.time()
         result_id = self.file_service.create_result_id()
@@ -42,12 +43,10 @@ class DetectionService:
             if not self.model_manager.is_loaded:
                 raise Exception("Los modelos no están cargados")
 
-            # Parámetros para los modelos
-            model_kwargs = {
-                'conf': request_params.get('confidence_threshold', 0.5),
-                'iou': request_params.get('iou_threshold', 0.4),
-                'verbose': False
-            }
+            # ✅ APLICAR CONFIGURACIÓN CENTRALIZADA CON FALLBACKS
+            model_kwargs = self._build_model_kwargs(request_params)
+
+            logger.debug(f"⚙️ Parámetros finales: {model_kwargs}")
 
             # Procesar con el pipeline completo
             with PerformanceTimer("Pipeline completo"):
@@ -56,9 +55,11 @@ class DetectionService:
                     **model_kwargs
                 )
 
-            # Guardar imágenes si se solicita
+            # Guardar imágenes si se solicita (usando config centralizada)
             result_urls = {}
-            if request_params.get('save_results', True) and pipeline_result.get("success"):
+            save_results = request_params.get('save_results', self.image_config['save_results'])
+
+            if save_results and pipeline_result.get("success"):
                 try:
                     # Copiar imagen original
                     original_path = await self.file_service.copy_to_results(
@@ -66,8 +67,10 @@ class DetectionService:
                     )
                     result_urls["original"] = self.file_service.get_file_url(original_path)
 
-                    # Generar visualización si se solicita
-                    if request_params.get('return_visualization', False):
+                    # Generar visualización si se solicita (usando config centralizada)
+                    return_viz = request_params.get('return_visualization',
+                                                    self.image_config['return_visualization'])
+                    if return_viz:
                         visualization = await self._create_visualization(
                             file_path, pipeline_result, result_id
                         )
@@ -108,11 +111,18 @@ class DetectionService:
                 "processing_summary": {
                     "plates_detected": pipeline_result.get("plates_processed", 0),
                     "plates_with_text": len([p for p in processed_plates if p["plate_text"]]),
-                    "valid_plates": len([p for p in processed_plates if p["is_valid_plate"]])
+                    "valid_plates": len([p for p in processed_plates if p["is_valid_plate"]]),
+                    "configuration_used": "centralized_settings"  # ✅ NUEVO
                 },
                 "processing_time": round(processing_time, 3),
                 "timestamp": time.time(),
-                "result_urls": result_urls if result_urls else None
+                "result_urls": result_urls if result_urls else None,
+                "config_info": {  # ✅ INFORMACIÓN DE CONFIGURACIÓN USADA
+                    "confidence_threshold": model_kwargs['conf'],
+                    "iou_threshold": model_kwargs['iou'],
+                    "max_detections": request_params.get('max_detections', self.image_config['max_detections']),
+                    "source": "centralized_settings"
+                }
             }
 
             # Limpiar archivo temporal
@@ -141,12 +151,29 @@ class DetectionService:
                 "processing_summary": {
                     "plates_detected": 0,
                     "plates_with_text": 0,
-                    "valid_plates": 0
+                    "valid_plates": 0,
+                    "configuration_used": "error"
                 },
                 "processing_time": round(processing_time, 3),
                 "timestamp": time.time(),
                 "result_urls": None
             }
+
+    def _build_model_kwargs(self, request_params: Dict[str, Any]) -> Dict[str, Any]:
+        """✅ NUEVO: Construye parámetros del modelo usando configuración centralizada"""
+
+        # Usar configuración centralizada como base con fallbacks a request_params
+        model_kwargs = {
+            'conf': request_params.get('confidence_threshold', self.image_config['confidence_threshold']),
+            'iou': request_params.get('iou_threshold', self.image_config['iou_threshold']),
+            'verbose': False
+        }
+
+        logger.debug(f"🔧 Config base: {self.image_config}")
+        logger.debug(f"📝 Request params: {request_params}")
+        logger.debug(f"⚙️ Kwargs finales: {model_kwargs}")
+
+        return model_kwargs
 
     def _generate_result_message(self, pipeline_result: Dict[str, Any], processed_plates: List[Dict]) -> str:
         """Genera mensaje descriptivo del resultado"""
@@ -167,12 +194,7 @@ class DetectionService:
 
     async def _create_visualization(self, file_path: str, pipeline_result: Dict[str, Any], result_id: str) -> Optional[
         str]:
-        """
-        Crea una imagen de visualización con las detecciones
-
-        Returns:
-            URL de la imagen de visualización o None si hay error
-        """
+        """Crea una imagen de visualización con las detecciones"""
         try:
             # Crear visualización de detección de placas
             if pipeline_result.get("plate_detection") and pipeline_result["plate_detection"]["success"]:
@@ -192,7 +214,7 @@ class DetectionService:
             return None
 
     async def get_processing_stats(self) -> Dict[str, Any]:
-        """Obtiene estadísticas del servicio de procesamiento"""
+        """✅ ACTUALIZADO: Obtiene estadísticas del servicio incluyendo configuración"""
         try:
             # Información de modelos
             model_info = self.model_manager.get_model_info()
@@ -214,10 +236,17 @@ class DetectionService:
                     "temp_dir_size_mb": sum(f.stat().st_size for f in temp_files if f.is_file()) / (1024 * 1024),
                     "results_dir_size_mb": sum(f.stat().st_size for f in result_files if f.is_file()) / (1024 * 1024)
                 },
-                "configuration": {
-                    "max_file_size_mb": 50,
-                    "confidence_threshold": model_info["confidence_threshold"],
-                    "iou_threshold": model_info["iou_threshold"]
+                "centralized_configuration": {  # ✅ NUEVA SECCIÓN
+                    "image_config": self.image_config,
+                    "validation_config": self.validation_config,
+                    "max_file_size_mb": settings.max_file_size,
+                    "roi_enabled": settings.roi_enabled,
+                    "force_six_characters": settings.force_six_characters,
+                    "configuration_source": "settings.py + .env"
+                },
+                "legacy_configuration": {  # ✅ PARA COMPATIBILIDAD
+                    "confidence_threshold": self.image_config['confidence_threshold'],
+                    "iou_threshold": self.image_config['iou_threshold']
                 }
             }
 
@@ -226,42 +255,115 @@ class DetectionService:
             return {"error": str(e)}
 
     def validate_detection_request(self, request_params: Dict[str, Any]) -> Dict[str, Any]:
-        """Valida los parámetros de la solicitud de detección"""
+        """✅ ACTUALIZADO: Valida parámetros usando configuración centralizada"""
         validation = {
             "is_valid": True,
             "errors": [],
-            "warnings": []
+            "warnings": [],
+            "recommendations": []
         }
 
         try:
-            confidence = request_params.get('confidence_threshold', 0.5)
-            iou = request_params.get('iou_threshold', 0.4)
-            max_det = request_params.get('max_detections', 5)
+            # Obtener valores con fallbacks a configuración centralizada
+            confidence = request_params.get('confidence_threshold', self.image_config['confidence_threshold'])
+            iou = request_params.get('iou_threshold', self.image_config['iou_threshold'])
+            max_det = request_params.get('max_detections', self.image_config['max_detections'])
 
-            # Validar umbrales
-            if confidence < 0.1 or confidence > 1.0:
-                validation["errors"].append("confidence_threshold debe estar entre 0.1 y 1.0")
+            # Usar rangos de validación centralizados
+            conf_range = self.validation_config['confidence_range']
+            iou_range = self.validation_config['iou_range']
+            det_range = self.validation_config['max_detections_range']
+            warnings = self.validation_config['warnings']
+            recommendations = self.validation_config['recommendations']
 
-            if iou < 0.1 or iou > 1.0:
-                validation["errors"].append("iou_threshold debe estar entre 0.1 y 1.0")
+            # Validar umbrales usando configuración centralizada
+            if confidence < conf_range[0] or confidence > conf_range[1]:
+                validation["errors"].append(
+                    f"confidence_threshold debe estar entre {conf_range[0]} y {conf_range[1]}"
+                )
 
-            if max_det < 1 or max_det > 10:
-                validation["errors"].append("max_detections debe estar entre 1 y 10")
+            if iou < iou_range[0] or iou > iou_range[1]:
+                validation["errors"].append(
+                    f"iou_threshold debe estar entre {iou_range[0]} y {iou_range[1]}"
+                )
 
-            # Advertencias
-            if confidence < 0.3:
-                validation["warnings"].append("confidence_threshold muy bajo, puede generar muchos falsos positivos")
+            if max_det < det_range[0] or max_det > det_range[1]:
+                validation["errors"].append(
+                    f"max_detections debe estar entre {det_range[0]} y {det_range[1]}"
+                )
 
-            if confidence > 0.8:
-                validation["warnings"].append("confidence_threshold muy alto, puede perderse detecciones válidas")
+            # Advertencias usando configuración centralizada
+            if confidence < warnings['low_confidence']:
+                validation["warnings"].append(
+                    f"confidence_threshold muy bajo ({confidence}), puede generar muchos falsos positivos"
+                )
+
+            if confidence > warnings['high_confidence']:
+                validation["warnings"].append(
+                    f"confidence_threshold muy alto ({confidence}), puede perderse detecciones válidas"
+                )
+
+            # Recomendaciones usando configuración centralizada
+            rec_conf_range = recommendations['confidence_range']
+            if confidence < rec_conf_range[0] or confidence > rec_conf_range[1]:
+                validation["recommendations"].append(
+                    f"Para mejores resultados, use confidence_threshold entre {rec_conf_range[0]} y {rec_conf_range[1]}"
+                )
 
             validation["is_valid"] = len(validation["errors"]) == 0
+
+            # Agregar información de configuración usada
+            validation["configuration_info"] = {
+                "validation_source": "centralized_settings",
+                "confidence_range_used": conf_range,
+                "iou_range_used": iou_range,
+                "warning_thresholds": warnings,
+                "recommendation_ranges": recommendations
+            }
 
         except Exception as e:
             validation["is_valid"] = False
             validation["errors"].append(f"Error validando request: {str(e)}")
 
         return validation
+
+    # ✅ NUEVOS MÉTODOS PARA CONFIGURACIÓN DINÁMICA
+
+    def get_current_config(self) -> Dict[str, Any]:
+        """Obtiene la configuración actual del servicio"""
+        return {
+            "image_detection": self.image_config,
+            "validation": self.validation_config,
+            "plate_detector": settings.get_plate_detector_config(),
+            "char_recognizer": settings.get_char_recognizer_config(),
+            "roi": settings.get_roi_config()
+        }
+
+    def update_config_from_settings(self):
+        """Recarga la configuración desde settings (útil si se cambian valores dinámicamente)"""
+        self.image_config = settings.get_image_detection_config()
+        self.validation_config = settings.get_validation_config()
+        logger.info("🔄 Configuración del DetectionService recargada desde settings")
+
+    def get_recommended_params_for_context(self, context: str = "standard") -> Dict[str, Any]:
+        """✅ NUEVO: Obtiene parámetros recomendados según el contexto"""
+
+        context_configs = {
+            "standard": self.image_config,
+            "quick": settings.get_quick_detection_config(),
+            "high_precision": {
+                **self.image_config,
+                "confidence_threshold": settings.high_confidence_warning,
+                "max_detections": settings.max_max_detections
+            },
+            "high_recall": {
+                **self.image_config,
+                "confidence_threshold": settings.low_confidence_warning,
+                "max_detections": settings.max_max_detections
+            }
+        }
+
+        return context_configs.get(context, self.image_config)
 
 
 # Instancia global del servicio
