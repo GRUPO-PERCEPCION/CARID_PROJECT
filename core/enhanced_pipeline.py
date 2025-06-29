@@ -21,200 +21,162 @@ class EnhancedALPRPipeline:
         self.roi_processor = ROIProcessor(roi_percentage=90.0)
         logger.info("🚀 EnhancedALPRPipeline inicializado para modelos de 6 caracteres sin guión")
 
-    def process_with_enhancements(
-            self,
-            image_input,
-            use_roi: bool = False,
-            filter_six_chars: bool = True,
-            return_stats: bool = False,
-            **kwargs
-    ) -> Dict[str, Any]:
-        """
-        ✅ CORREGIDO: Procesa imagen esperando exactamente 6 caracteres del modelo
-        """
+    def process_with_enhancements(self, image: np.ndarray, use_roi: bool = True,
+                                  filter_six_chars: bool = False,  # ✅ CAMBIAR DEFAULT
+                                  return_stats: bool = False,
+                                  **model_kwargs) -> Dict[str, Any]:
+        """Pipeline optimizado para detección múltiple"""
 
-        with PerformanceTimer(f"Pipeline {'con ROI' if use_roi else 'completo'} - 6 chars sin guión"):
-            try:
-                logger.info(f"🔄 Procesando {'con ROI' if use_roi else 'imagen completa'} "
-                            f"{'+ filtro 6 chars (sin guión)' if filter_six_chars else ''}")
+        try:
+            # CONFIGURAR PARA MÚLTIPLES DETECCIONES
+            enhanced_kwargs = {
+                **model_kwargs,
+                'conf': model_kwargs.get('conf', 0.25),  # Más permisivo que antes (era 0.5)
+                'iou': model_kwargs.get('iou', 0.3),  # Menos agresivo en NMS (era 0.45)
+                'max_det': model_kwargs.get('max_det', 25),  # ✅ MÁS DETECCIONES (era 5-10)
+                'verbose': model_kwargs.get('verbose', False)
+            }
 
-                # Preprocesar imagen
-                image = self.model_manager.plate_detector.preprocess_image(image_input)
-                original_image = image.copy()
-                processing_image = image.copy()
+            logger.info(f"🎯 Pipeline múltiple iniciado: max_det={enhanced_kwargs['max_det']}, "
+                        f"conf={enhanced_kwargs['conf']}, iou={enhanced_kwargs['iou']}, "
+                        f"filter_six_chars={filter_six_chars}")
 
-                # Variables para tracking
+            # ROI EXPANDIDO
+            if use_roi:
+                roi_percentage = 0.85  # ✅ EXPANDIR ROI de 60% a 85%
+                roi_image, roi_coords = self._apply_central_roi(image, roi_percentage)
+                logger.debug(f"🎯 ROI aplicado: {roi_percentage * 100}% de la imagen")
+            else:
+                roi_image = image
                 roi_coords = None
-                roi_stats = None
+                logger.debug("🎯 Procesando imagen completa sin ROI")
 
-                # Aplicar ROI si se solicita
-                if use_roi:
-                    processing_image, roi_coords = self.roi_processor.extract_roi(image)
-                    logger.info(f"🎯 ROI aplicado: {roi_coords['width']}x{roi_coords['height']} "
-                                f"({self.roi_processor.roi_percentage}% del total)")
+            # DETECCIÓN DE PLACAS con parámetros mejorados
+            logger.debug(f"🔍 Iniciando detección de placas con kwargs: {enhanced_kwargs}")
+            plate_result = self.model_manager.detect_plates(roi_image, **enhanced_kwargs)
 
-                    if return_stats:
-                        roi_stats = self.roi_processor.get_roi_statistics((image.shape[0], image.shape[1]))
+            # LOG DETALLADO de detecciones
+            if plate_result.get("success") and plate_result.get("detections"):
+                logger.info(f"📊 Detecciones de placas encontradas: {len(plate_result['detections'])}")
+            else:
+                logger.warning(f"⚠️ Sin detecciones de placas válidas")
 
-                # Paso 1: Detectar placas en la imagen (o ROI)
-                with PerformanceTimer("Detección de placas"):
-                    plate_results = self.model_manager.plate_detector.detect_plates(
-                        processing_image, **kwargs
-                    )
+            # PROCESAR TODAS LAS DETECCIONES sin filtrar agresivamente
+            final_results = []
+            processing_stats = {
+                "total_plate_detections": 0,
+                "successful_recognitions": 0,
+                "failed_recognitions": 0,
+                "six_char_validations": 0,
+                "auto_formatted": 0
+            }
 
-                if not plate_results["success"] or plate_results["plates_detected"] == 0:
-                    return self._create_empty_result(use_roi, roi_coords, roi_stats, filter_six_chars)
+            if plate_result.get("success") and plate_result.get("detections"):
+                processing_stats["total_plate_detections"] = len(plate_result["detections"])
 
-                # Paso 2: Procesar cada placa detectada
-                final_results = []
-                validation_stats = {"total_plates": 0, "six_char_valid": 0, "filtered_out": 0, "auto_formatted": 0}
+                for i, detection in enumerate(plate_result["detections"]):
+                    try:
+                        logger.debug(f"🔤 Procesando placa {i + 1}/{len(plate_result['detections'])}")
 
-                with PerformanceTimer("Reconocimiento de caracteres (6 chars sin guión)"):
-                    for i, plate_info in enumerate(plate_results["plates"]):
-                        try:
-                            # Extraer región de la placa
-                            plate_region = self.model_manager.plate_detector.crop_image_from_bbox(
-                                processing_image, plate_info["bbox"], padding=10
-                            )
+                        # PROCESAR REGIÓN DE PLACA con confianza más baja
+                        char_result = self._process_plate_region(roi_image, detection, i)
 
-                            # Reconocer caracteres
-                            char_results = self.model_manager.char_recognizer.recognize_characters(
-                                plate_region, **kwargs
-                            )
+                        if char_result.get("plate_text") or char_result.get("raw_plate_text"):
+                            # VALIDACIÓN MÁS PERMISIVA
+                            raw_text = char_result.get("raw_plate_text", "")
+                            formatted_text = char_result.get("plate_text", "")
 
-                            validation_stats["total_plates"] += 1
+                            # Aceptar si tiene al menos 4 caracteres reconocibles
+                            if len(raw_text) >= 4 or len(formatted_text) >= 4:
+                                final_results.append(char_result)
+                                processing_stats["successful_recognitions"] += 1
 
-                            # ✅ NUEVO: Procesar texto crudo (6 caracteres sin guión)
-                            raw_plate_text = char_results.get("plate_text", "")
+                                if char_result.get("six_char_validated", False):
+                                    processing_stats["six_char_validations"] += 1
 
-                            logger.debug(f"🔤 Texto crudo del modelo: '{raw_plate_text}'")
+                                if char_result.get("auto_formatted", False):
+                                    processing_stats["auto_formatted"] += 1
 
-                            # Aplicar filtro de 6 caracteres si se solicita
-                            if filter_six_chars:
-                                validation = self.plate_validator.validate_six_characters_only(raw_plate_text)
-
-                                if not validation["is_valid"]:
-                                    validation_stats["filtered_out"] += 1
-                                    logger.debug(f"❌ Placa rechazada: '{raw_plate_text}' - {validation['reason']}")
-                                    continue
-
-                                # ✅ USAR TEXTO FORMATEADO (con guión agregado automáticamente)
-                                formatted_text = validation["formatted_text"]
-                                char_results["plate_text"] = formatted_text
-                                char_results["raw_plate_text"] = validation["clean_text"]  # Original
-                                char_results["validation_info"] = validation
-                                char_results["auto_formatted"] = True
-
-                                validation_stats["six_char_valid"] += 1
-                                validation_stats["auto_formatted"] += 1
-
-                                logger.info(f"✅ Placa formateada: '{validation['clean_text']}' -> '{formatted_text}'")
+                                logger.debug(f"✅ Placa {i + 1} aceptada: '{raw_text}' -> '{formatted_text}' "
+                                             f"(6chars: {char_result.get('six_char_validated', False)}, "
+                                             f"auto: {char_result.get('auto_formatted', False)})")
                             else:
-                                # Sin filtro, usar texto tal como viene
-                                char_results["raw_plate_text"] = raw_plate_text
-                                char_results["auto_formatted"] = False
+                                processing_stats["failed_recognitions"] += 1
+                                logger.debug(f"❌ Placa {i + 1} rechazada: texto muy corto")
+                        else:
+                            processing_stats["failed_recognitions"] += 1
+                            logger.debug(f"❌ Placa {i + 1} sin texto reconocible")
 
-                            # Combinar resultados
-                            combined_result = {
-                                "plate_id": i + 1,
-                                "plate_bbox": plate_info["bbox"],
-                                "plate_confidence": plate_info["confidence"],
-                                "plate_area": plate_info["area"],
-                                "character_recognition": char_results,
-                                "plate_text": char_results.get("plate_text", ""),
-                                "raw_plate_text": char_results.get("raw_plate_text", ""),  # ✅ NUEVO
-                                "overall_confidence": self._calculate_combined_confidence(
-                                    plate_info["confidence"],
-                                    char_results.get("confidence", 0.0)
-                                ),
-                                "is_valid_plate": char_results.get("is_valid_format", False),
-                                "six_char_validated": filter_six_chars and validation_stats["six_char_valid"] > 0,
-                                "auto_formatted": char_results.get("auto_formatted", False),  # ✅ NUEVO
-                                "validation_info": char_results.get("validation_info", {}),  # ✅ NUEVO
-                                "processing_method": "roi" if use_roi else "full_image",
-                                "model_output": raw_plate_text  # ✅ GUARDAR OUTPUT ORIGINAL
-                            }
+                    except Exception as e:
+                        processing_stats["failed_recognitions"] += 1
+                        logger.warning(f"⚠️ Error procesando placa {i + 1}: {str(e)}")
+                        continue
 
-                            final_results.append(combined_result)
+            # APLICAR FILTROS SEGÚN CONFIGURACIÓN
+            if filter_six_chars:
+                # Solo aplicar filtro estricto si se solicita explícitamente
+                validated_results = [r for r in final_results if r.get("six_char_validated", False)]
+                logger.info(f"🔍 Filtro 6 chars aplicado: {len(validated_results)}/{len(final_results)} placas")
+            else:
+                # Filtro permisivo: aceptar cualquier placa con texto reconocible
+                validated_results = [r for r in final_results if len(r.get("raw_plate_text", "")) >= 4]
+                logger.info(f"🔍 Filtro permisivo aplicado: {len(validated_results)}/{len(final_results)} placas")
 
-                        except Exception as e:
-                            logger.error(f"❌ Error procesando placa {i + 1}: {str(e)}")
-                            continue
+            # ESTADÍSTICAS FINALES
+            success = len(validated_results) > 0
 
-                # Ajustar coordenadas si se usó ROI
-                if use_roi and roi_coords and final_results:
-                    with PerformanceTimer("Ajuste de coordenadas ROI"):
-                        final_results = self.roi_processor.adjust_detections_to_full_image(
-                            final_results, roi_coords
-                        )
+            logger.success(f"🎯 Pipeline múltiple completado: {len(validated_results)} placas válidas "
+                           f"de {processing_stats['total_plate_detections']} detectadas "
+                           f"(ROI: {use_roi}, Filtro: {filter_six_chars})")
 
-                # Ordenar por confianza
-                final_results.sort(key=lambda x: x["overall_confidence"], reverse=True)
+            # RESULTADO FINAL COMPLETO
+            result = {
+                "success": success,
+                "total_detections": processing_stats["total_plate_detections"],
+                "valid_detections": len(validated_results),
+                "final_results": validated_results,  # TODAS las válidas
+                "processing_stats": processing_stats,
+                "enhancement_info": {
+                    "roi_used": use_roi,
+                    "roi_percentage": 85.0 if use_roi else 100.0,
+                    "filter_applied": filter_six_chars,
+                    "detection_mode": "multiple_plates_optimized",
+                    "pipeline_version": "enhanced_v2.0"
+                },
+                "model_params": enhanced_kwargs,
+                "validation_summary": {
+                    "total_processed": len(final_results),
+                    "final_accepted": len(validated_results),
+                    "six_char_valid": processing_stats["six_char_validations"],
+                    "auto_formatted": processing_stats["auto_formatted"],
+                    "success_rate": round(
+                        len(validated_results) / max(processing_stats["total_plate_detections"], 1) * 100, 1)
+                }
+            }
 
-                # Resultado final
-                result = {
-                    "success": len(final_results) > 0,
-                    "plates_processed": len(final_results),
-                    "use_roi": use_roi,
+            if return_stats:
+                result["detailed_stats"] = {
+                    "plate_detection": plate_result,
                     "roi_coords": roi_coords,
-                    "filter_six_chars": filter_six_chars,
-                    "plate_detection": plate_results,
-                    "final_results": final_results,
-                    "best_result": final_results[0] if final_results else None,
-                    "processing_summary": {
-                        "plates_detected": plate_results["plates_detected"],
-                        "plates_with_text": len(final_results),
-                        "valid_plates": len([r for r in final_results if r["is_valid_plate"]]),
-                        "six_char_filter_applied": filter_six_chars,
-                        "auto_formatted_plates": validation_stats["auto_formatted"],  # ✅ NUEVO
-                        "validation_stats": validation_stats
-                    },
-                    "model_info": {  # ✅ INFORMACIÓN DEL MODELO
-                        "expects_six_chars": True,
-                        "detects_dash": False,
-                        "auto_formatting": filter_six_chars
-                    }
+                    "processing_time_ms": 0  # Se puede agregar timing si es necesario
                 }
 
-                # Agregar estadísticas si se solicitan
-                if return_stats:
-                    result["detailed_stats"] = {
-                        "roi_stats": roi_stats,
-                        "validation_detailed": self.plate_validator.get_validation_stats(
-                            final_results) if final_results else None,
-                        "processing_method": "roi" if use_roi else "full_image",
-                        "enhancement_flags": {
-                            "roi_enabled": use_roi,
-                            "six_char_filter": filter_six_chars,
-                            "auto_dash_formatting": filter_six_chars,  # ✅ NUEVO
-                            "stats_requested": return_stats
-                        }
-                    }
+            return result
 
-                # ✅ LOG MEJORADO
-                if final_results:
-                    best = final_results[0]
-                    logger.success(f"✅ Pipeline completado: {len(final_results)} placa(s). "
-                                 f"Mejor: '{best.get('raw_plate_text', '')}' -> '{best['plate_text']}' "
-                                 f"(Confianza: {best['overall_confidence']:.3f})")
-                else:
-                    logger.info("📭 No se detectaron placas válidas")
-
-                return result
-
-            except Exception as e:
-                logger.error(f"❌ Error en pipeline mejorado: {str(e)}")
-                return {
-                    "success": False,
-                    "message": f"Error en pipeline: {str(e)}",
-                    "use_roi": use_roi,
-                    "final_results": [],
-                    "model_info": {
-                        "expects_six_chars": True,
-                        "detects_dash": False,
-                        "auto_formatting": filter_six_chars
-                    }
+        except Exception as e:
+            logger.error(f"❌ Error crítico en pipeline múltiple: {str(e)}")
+            logger.exception("Stack trace completo:")
+            return {
+                "success": False,
+                "error": str(e),
+                "final_results": [],
+                "total_detections": 0,
+                "valid_detections": 0,
+                "enhancement_info": {
+                    "error_occurred": True,
+                    "detection_mode": "multiple_plates_failed"
                 }
+            }
 
     def _create_empty_result(self, use_roi: bool, roi_coords: Optional[Dict], roi_stats: Optional[Dict],
                              filter_six_chars: bool) -> Dict[str, Any]:

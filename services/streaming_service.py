@@ -76,19 +76,91 @@ class StreamingDetectionTracker:
         self.detection_timeline: List[Dict[str, Any]] = []
         self.frame_detections: Dict[int, List[Dict[str, Any]]] = {}
         self.best_detection_per_plate: Dict[str, Dict[str, Any]] = {}
-        # ✅ CONTADORES ACTUALIZADOS
         self.six_char_plates: Dict[str, Dict[str, Any]] = {}
         self.total_six_char_detections = 0
-        self.total_auto_formatted_detections = 0  # ✅ NUEVO
+        self.total_auto_formatted_detections = 0  #  NUEVO
+
+    def _get_spatial_key(self, bbox: List[float], frame_num: int) -> str:
+        """Clave espacial única para streaming"""
+        try:
+            x1, y1, x2, y2 = bbox
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+
+            # Cuadrícula 5x5 para mejor separación en streaming
+            grid_x = int(center_x // 256)  # 1280/5
+            grid_y = int(center_y // 216)  # 1080/5
+
+            # Incluir grupo temporal cada 30 frames (~1 segundo)
+            time_group = frame_num // 30
+
+            return f"S{grid_x}_{grid_y}_T{time_group}"
+        except Exception:
+            return f"S0_0_T{frame_num // 30}"
+
+    def _update_unique_plate_safe(self, plate_text: str, detection: Dict[str, Any],
+                                  frame_num: int, timestamp: float):
+        """Actualización segura sin fusión agresiva"""
+
+        bbox = detection.get("plate_bbox", [0, 0, 0, 0])
+        confidence = detection.get("overall_confidence", 0.0)
+        spatial_key = self._get_spatial_key(bbox, frame_num)
+
+        # Crear clave única combinando texto y región espacial
+        unique_key = f"{plate_text}_{spatial_key}" if plate_text else f"UNKNOWN_{spatial_key}"
+
+        if unique_key not in self.unique_plates:
+            self.unique_plates[unique_key] = {
+                "plate_text": plate_text,
+                "raw_plate_text": detection.get("raw_plate_text", ""),
+                "spatial_key": spatial_key,
+                "first_seen_frame": frame_num,
+                "first_seen_timestamp": timestamp,
+                "last_seen_frame": frame_num,
+                "last_seen_timestamp": timestamp,
+                "detection_count": 0,
+                "best_confidence": 0.0,
+                "best_frame": frame_num,
+                "best_timestamp": timestamp,
+                "avg_confidence": 0.0,
+                "total_confidence": 0.0,
+                "is_valid_format": detection.get("is_valid_plate", False),
+                "is_six_char_valid": detection.get("six_char_validated", False),
+                "auto_formatted": detection.get("auto_formatted", False),
+                "frame_history": [],
+                "confidence_trend": []
+            }
+
+        # Actualizar estadísticas
+        plate_data = self.unique_plates[unique_key]
+        plate_data["detection_count"] += 1
+        plate_data["last_seen_frame"] = frame_num
+        plate_data["last_seen_timestamp"] = timestamp
+        plate_data["total_confidence"] += confidence
+        plate_data["avg_confidence"] = plate_data["total_confidence"] / plate_data["detection_count"]
+
+        # Actualizar mejor detección
+        if confidence > plate_data["best_confidence"]:
+            plate_data["best_confidence"] = confidence
+            plate_data["best_frame"] = frame_num
+            plate_data["best_timestamp"] = timestamp
+
+        # Mantener historial (últimos 15 para streaming)
+        plate_data["frame_history"].append(frame_num)
+        plate_data["confidence_trend"].append(confidence)
+        if len(plate_data["frame_history"]) > 15:
+            plate_data["frame_history"] = plate_data["frame_history"][-15:]
+            plate_data["confidence_trend"] = plate_data["confidence_trend"][-15:]
 
     def add_frame_detections(self, frame_num: int, detections: List[Dict[str, Any]], timestamp: float):
-        """✅ ACTUALIZADO: Agrega detecciones con soporte para 6 caracteres SIN guión"""
+        """Procesar múltiples detecciones sin fusión agresiva"""
         self.frame_detections[frame_num] = detections
 
+        logger.debug(f"📥 Frame {frame_num}: Procesando {len(detections)} detecciones")
+
         for detection in detections:
-            # ✅ USAR TEXTO FORMATEADO COMO CLAVE PRINCIPAL
-            formatted_text = detection.get("plate_text", "")  # Con guión
-            raw_text = detection.get("raw_plate_text", "")  # Sin guión
+            formatted_text = detection.get("plate_text", "")
+            raw_text = detection.get("raw_plate_text", "")
             confidence = detection.get("overall_confidence", 0.0)
             is_six_char = detection.get("six_char_validated", False)
             auto_formatted = detection.get("auto_formatted", False)
@@ -102,103 +174,92 @@ class StreamingDetectionTracker:
             if auto_formatted:
                 self.total_auto_formatted_detections += 1
 
+            # USAR MÉTODO SEGURO PARA EVITAR FUSIONES ERRÓNEAS
+            self._update_unique_plate_safe(plate_key, detection, frame_num, timestamp)
+
             # Agregar al timeline
             timeline_entry = {
                 **detection,
                 "frame_num": frame_num,
                 "timestamp": timestamp,
-                "detection_id": f"{frame_num}_{plate_key}_{int(time.time() * 1000)}"
+                "detection_id": f"{self.session_id}_{frame_num}_{plate_key}_{int(time.time() * 1000)}"
             }
             self.detection_timeline.append(timeline_entry)
 
-            # Actualizar o crear entrada de placa única
-            if plate_key not in self.unique_plates:
-                self.unique_plates[plate_key] = {
-                    "plate_text": formatted_text,  # ✅ CON GUIÓN
-                    "raw_plate_text": raw_text,  # ✅ SIN GUIÓN
-                    "first_seen_frame": frame_num,
-                    "first_seen_timestamp": timestamp,
-                    "last_seen_frame": frame_num,
-                    "last_seen_timestamp": timestamp,
-                    "detection_count": 0,
-                    "best_confidence": 0.0,
-                    "best_frame": frame_num,
-                    "best_timestamp": timestamp,
-                    "avg_confidence": 0.0,
-                    "total_confidence": 0.0,
-                    "is_valid_format": detection.get("is_valid_plate", False),
-                    "is_six_char_valid": False,  # ✅ ACTUALIZADO
-                    "auto_formatted": False,  # ✅ NUEVO
-                    "six_char_detection_count": 0,
-                    "auto_formatted_detection_count": 0,  # ✅ NUEVO
-                    "frame_history": [],
-                    "confidence_trend": [],
-                    "status": "active"
-                }
-
-            # Actualizar estadísticas
-            plate_data = self.unique_plates[plate_key]
-            plate_data["detection_count"] += 1
-            plate_data["last_seen_frame"] = frame_num
-            plate_data["last_seen_timestamp"] = timestamp
-            plate_data["total_confidence"] += confidence
-            plate_data["avg_confidence"] = plate_data["total_confidence"] / plate_data["detection_count"]
-
-            # ✅ ACTUALIZAR ESTADÍSTICAS ESPECÍFICAS
-            if is_six_char:
-                plate_data["is_six_char_valid"] = True
-                plate_data["six_char_detection_count"] += 1
-
-                # Agregar a placas de 6 caracteres
-                if plate_key not in self.six_char_plates:
-                    self.six_char_plates[plate_key] = plate_data
-
-            if auto_formatted:
-                plate_data["auto_formatted"] = True
-                plate_data["auto_formatted_detection_count"] += 1
-
-            # Actualizar mejor detección
-            if confidence > plate_data["best_confidence"]:
-                plate_data["best_confidence"] = confidence
-                plate_data["best_frame"] = frame_num
-                plate_data["best_timestamp"] = timestamp
-                self.best_detection_per_plate[plate_key] = detection
-
-            # Agregar a historial (mantener últimos 20)
-            plate_data["frame_history"].append(frame_num)
-            plate_data["confidence_trend"].append(confidence)
-            if len(plate_data["frame_history"]) > 20:
-                plate_data["frame_history"] = plate_data["frame_history"][-20:]
-                plate_data["confidence_trend"] = plate_data["confidence_trend"][-20:]
+            logger.debug(f"✅ Detección procesada: '{raw_text}' -> '{formatted_text}' "
+                         f"(6chars: {is_six_char}, auto: {auto_formatted}, conf: {confidence:.3f})")
 
     def get_streaming_summary(self) -> Dict[str, Any]:
-        """✅ ACTUALIZADO: Genera resumen con información de 6 caracteres y auto-formateo"""
-        sorted_plates = sorted(
-            self.unique_plates.values(),
-            key=lambda p: (p.get("is_six_char_valid", False), p.get("auto_formatted", False), p["best_confidence"]),
-            reverse=True
-        )
+        """Resumen completo con todas las placas detectadas"""
 
+        all_plates = list(self.unique_plates.values())
+        spatial_regions = len(set(p.get("spatial_key", "") for p in all_plates))
         total_detections = len(self.detection_timeline)
-        valid_plates = [p for p in sorted_plates if p["is_valid_format"]]
-        six_char_plates = [p for p in sorted_plates if p.get("is_six_char_valid", False)]
-        auto_formatted_plates = [p for p in sorted_plates if p.get("auto_formatted", False)]
+
+        # Clasificar placas por confianza
+        high_conf_plates = [p for p in all_plates if p.get("best_confidence", 0) > 0.7]
+        medium_conf_plates = [p for p in all_plates if 0.4 <= p.get("best_confidence", 0) <= 0.7]
+        low_conf_plates = [p for p in all_plates if p.get("best_confidence", 0) < 0.4]
+
+        # Obtener mejores placas por categoría
+        valid_plates = [p for p in all_plates if p.get("is_valid_format", False)]
+        six_char_plates = [p for p in all_plates if p.get("is_six_char_valid", False)]
+        auto_formatted_plates = [p for p in all_plates if p.get("auto_formatted", False)]
+
+        # Distribución espacial
+        spatial_distribution = {}
+        for spatial_key in set(p.get("spatial_key", "") for p in all_plates):
+            if spatial_key:
+                spatial_distribution[spatial_key] = len([p for p in all_plates if p.get("spatial_key") == spatial_key])
+
+        # Calcular estadísticas avanzadas
         frames_with_detections = len(self.frame_detections)
+        detection_density = frames_with_detections / max(len(self.frame_detections), 1)
+        six_char_rate = self.total_six_char_detections / max(total_detections, 1)
+        auto_formatted_rate = self.total_auto_formatted_detections / max(total_detections, 1)
 
         return {
             "total_detections": total_detections,
-            "unique_plates_count": len(self.unique_plates),
+            "unique_plates_count": len(all_plates),
             "valid_plates_count": len(valid_plates),
             "six_char_plates_count": len(six_char_plates),
-            "auto_formatted_plates_count": len(auto_formatted_plates),  # ✅ NUEVO
+            "auto_formatted_plates_count": len(auto_formatted_plates),
+            "spatial_regions_count": spatial_regions,
             "frames_with_detections": frames_with_detections,
-            "best_plates": sorted_plates[:5],
-            "best_six_char_plates": six_char_plates[:3],
-            "best_auto_formatted_plates": auto_formatted_plates[:3],  # ✅ NUEVO
+
+            # Listas completas
+            "all_unique_plates": all_plates,  # Lista completa sin límite
+            "best_plates": sorted(all_plates, key=lambda p: p.get("best_confidence", 0), reverse=True)[:10],
+            "best_six_char_plates": sorted(six_char_plates, key=lambda p: p.get("best_confidence", 0), reverse=True)[
+                                    :5],
+            "best_auto_formatted_plates": sorted(auto_formatted_plates, key=lambda p: p.get("best_confidence", 0),
+                                                 reverse=True)[:5],
+
+            # Clasificaciones por confianza
+            "plates_by_confidence": {
+                "high_confidence": high_conf_plates,
+                "medium_confidence": medium_conf_plates,
+                "low_confidence": low_conf_plates
+            },
+
+            # Distribución espacial
+            "spatial_distribution": spatial_distribution,
+            "plates_by_region": {
+                region: [p for p in all_plates if p.get("spatial_key") == region]
+                for region in spatial_distribution.keys()
+            },
+
+            # Estadísticas avanzadas
+            "detection_statistics": {
+                "detection_density": round(detection_density, 3),
+                "six_char_detection_rate": round(six_char_rate, 3),
+                "auto_formatted_rate": round(auto_formatted_rate, 3),
+                "avg_confidence": round(sum(p.get("best_confidence", 0) for p in all_plates) / max(len(all_plates), 1),
+                                        3),
+                "total_regions_covered": spatial_regions
+            },
+
             "latest_detections": self.detection_timeline[-10:],
-            "detection_density": frames_with_detections / max(len(self.frame_detections), 1),
-            "six_char_detection_rate": self.total_six_char_detections / max(total_detections, 1),
-            "auto_formatted_rate": self.total_auto_formatted_detections / max(total_detections, 1),  # ✅ NUEVO
             "session_id": self.session_id
         }
 
@@ -1384,6 +1445,28 @@ class StreamingVideoProcessor:
                 },
                 "current_detections": streaming_frame.detections,
                 "detection_summary": detection_summary,
+
+                "all_plates_summary": {  # NUEVO BLOQUE
+                    "complete_list": detection_summary.get("all_unique_plates", []),
+                    "count_by_confidence": {
+                        "high": len(detection_summary.get("plates_by_confidence", {}).get("high_confidence", [])),
+                        "medium": len(detection_summary.get("plates_by_confidence", {}).get("medium_confidence", [])),
+                        "low": len(detection_summary.get("plates_by_confidence", {}).get("low_confidence", []))
+                    },
+                    "spatial_coverage": {
+                        "regions_active": detection_summary.get("spatial_regions_count", 0),
+                        "distribution": detection_summary.get("spatial_distribution", {})
+                    },
+                    "detection_metrics": {  # MÉTRICAS ADICIONALES
+                        "total_unique_plates": len(detection_summary.get("all_unique_plates", [])),
+                        "plates_per_region": round(len(detection_summary.get("all_unique_plates", [])) / max(
+                            detection_summary.get("spatial_regions_count", 1), 1), 2),
+                        "avg_confidence": round(sum(
+                            p.get("best_confidence", 0) for p in detection_summary.get("all_unique_plates", [])) / max(
+                            len(detection_summary.get("all_unique_plates", [])), 1), 3)
+                    }
+                },
+
                 "timing": {
                     "elapsed_time": time.time() - session.start_time if session.start_time else 0,
                     "estimated_remaining": self._estimate_remaining_time(session)
@@ -1400,7 +1483,7 @@ class StreamingVideoProcessor:
                 }
             }
 
-            # ✅ CORRECCIÓN CRÍTICA: SIEMPRE incluir frame_data
+            # SIEMPRE incluir frame_data
             if streaming_frame.frame_image_base64:
                 update_data["frame_data"] = {
                     "image_base64": streaming_frame.frame_image_base64,

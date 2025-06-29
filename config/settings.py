@@ -138,6 +138,9 @@ class Settings(BaseSettings):
     char_confidence_weight: float = Field(default=0.6, env="CHAR_CONFIDENCE_WEIGHT")
     min_combined_confidence: float = Field(default=0.3, env="MIN_COMBINED_CONFIDENCE")
 
+    streaming_max_detections: int = Field(default=30, env="STREAMING_MAX_DETECTIONS")
+    video_max_detections: int = Field(default=25, env="VIDEO_MAX_DETECTIONS")
+
     # Logging
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
     log_file: str = Field(default="./logs/api.log", env="LOG_FILE")
@@ -179,7 +182,8 @@ class Settings(BaseSettings):
             "save_results": self.video_save_results,
             "save_best_frames": self.video_save_best_frames,
             "create_annotated_video": self.video_create_annotated_video,
-            "processing_timeout": self.video_processing_timeout
+            "processing_timeout": self.video_processing_timeout,
+            "max_detections": self.video_max_detections  # ✅ NUEVA LÍNEA
         }
 
     def get_tracking_config(self) -> Dict[str, Any]:
@@ -267,7 +271,8 @@ class Settings(BaseSettings):
                 "confidence_threshold": max(0.25, self.model_confidence_threshold - 0.15),
                 "iou_threshold": self.model_iou_threshold,
                 "frame_skip": max(1, self.video_frame_skip - 1),
-                "min_detection_frames": max(1, self.video_min_detection_frames - 1)
+                "min_detection_frames": max(1, self.video_min_detection_frames - 1),
+                "max_detections": self.streaming_max_detections  # NUEVA LÍNEA
             }
         }
 

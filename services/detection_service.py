@@ -23,16 +23,9 @@ class DetectionService:
         logger.info("🔍 DetectionService inicializado con configuración centralizada")
         logger.debug(f"📊 Config imágenes: {self.image_config}")
 
-    async def process_image(
-            self,
-            file_path: str,
-            file_info: Dict[str, Any],
-            request_params: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Procesa una imagen completa con el pipeline de detección + reconocimiento
-        usando configuración centralizada con fallbacks inteligentes
-        """
+    async def process_image(self, file_path: str, file_info: Dict[str, Any],
+                            request_params: Dict[str, Any]) -> Dict[str, Any]:
+        """Procesa imagen con detección múltiple mejorada"""
         start_time = time.time()
         result_id = self.file_service.create_result_id()
 
@@ -43,7 +36,7 @@ class DetectionService:
             if not self.model_manager.is_loaded:
                 raise Exception("Los modelos no están cargados")
 
-            # ✅ APLICAR CONFIGURACIÓN CENTRALIZADA CON FALLBACKS
+            # APLICAR CONFIGURACIÓN CENTRALIZADA CON FALLBACKS
             model_kwargs = self._build_model_kwargs(request_params)
 
             logger.debug(f"⚙️ Parámetros finales: {model_kwargs}")
@@ -54,6 +47,13 @@ class DetectionService:
                     file_path,
                     **model_kwargs
                 )
+
+            # LOG DETALLADO de detecciones múltiples
+            if pipeline_result.get("success") and pipeline_result.get("final_results"):
+                logger.info(f"📊 Detecciones encontradas: {len(pipeline_result['final_results'])} placas")
+                for i, result in enumerate(pipeline_result["final_results"][:10]):  # Log primeras 10
+                    logger.debug(f"  Placa {i + 1}: '{result.get('plate_text', 'N/A')}' "
+                                 f"(conf: {result.get('overall_confidence', 0):.3f})")
 
             # Guardar imágenes si se solicita (usando config centralizada)
             result_urls = {}
@@ -95,9 +95,18 @@ class DetectionService:
                         "character_recognition": result["character_recognition"],
                         "plate_text": result["plate_text"],
                         "overall_confidence": result["overall_confidence"],
-                        "is_valid_plate": result["is_valid_plate"]
+                        "is_valid_plate": result["is_valid_plate"],
+                        "spatial_region": self._get_plate_region(result["plate_bbox"])  # NUEVA
                     }
                     processed_plates.append(processed_plate)
+
+            # ANÁLISIS ESPACIAL DE LAS DETECCIONES
+            spatial_regions = len(set(p["spatial_region"] for p in processed_plates))
+            confidence_breakdown = {
+                "high": len([p for p in processed_plates if p["overall_confidence"] > 0.7]),
+                "medium": len([p for p in processed_plates if 0.4 <= p["overall_confidence"] <= 0.7]),
+                "low": len([p for p in processed_plates if p["overall_confidence"] < 0.4])
+            }
 
             # Crear resultado final
             result = {
@@ -108,16 +117,25 @@ class DetectionService:
                 "plate_detection": pipeline_result.get("plate_detection"),
                 "final_results": processed_plates,
                 "best_result": processed_plates[0] if processed_plates else None,
+                "all_detected_plates": processed_plates,  # Lista completa
                 "processing_summary": {
                     "plates_detected": pipeline_result.get("plates_processed", 0),
                     "plates_with_text": len([p for p in processed_plates if p["plate_text"]]),
                     "valid_plates": len([p for p in processed_plates if p["is_valid_plate"]]),
-                    "configuration_used": "centralized_settings"  # ✅ NUEVO
+                    "total_plates_found": len(processed_plates),  # NUEVA
+                    "spatial_regions_covered": spatial_regions,  # NUEVA
+                    "confidence_distribution": confidence_breakdown,  # NUEVA
+                    "configuration_used": "centralized_settings"
+                },
+                "plates_by_confidence": confidence_breakdown,  # NUEVA
+                "spatial_distribution": {  # NUEVA
+                    region: len([p for p in processed_plates if p["spatial_region"] == region])
+                    for region in set(p["spatial_region"] for p in processed_plates)
                 },
                 "processing_time": round(processing_time, 3),
                 "timestamp": time.time(),
                 "result_urls": result_urls if result_urls else None,
-                "config_info": {  # ✅ INFORMACIÓN DE CONFIGURACIÓN USADA
+                "config_info": {  # INFORMACIÓN DE CONFIGURACIÓN USADA
                     "confidence_threshold": model_kwargs['conf'],
                     "iou_threshold": model_kwargs['iou'],
                     "max_detections": request_params.get('max_detections', self.image_config['max_detections']),
@@ -128,7 +146,8 @@ class DetectionService:
             # Limpiar archivo temporal
             self.file_service.cleanup_temp_file(file_path)
 
-            logger.success(f"✅ Procesamiento completado en {processing_time:.3f}s")
+            logger.success(f"✅ Procesamiento completado en {processing_time:.3f}s - "
+                           f"{len(processed_plates)} placas en {spatial_regions} regiones")
             return result
 
         except Exception as e:
@@ -148,32 +167,60 @@ class DetectionService:
                 "plate_detection": None,
                 "final_results": [],
                 "best_result": None,
+                "all_detected_plates": [],  # NUEVA
                 "processing_summary": {
                     "plates_detected": 0,
                     "plates_with_text": 0,
                     "valid_plates": 0,
+                    "total_plates_found": 0,
+                    "spatial_regions_covered": 0,
+                    "confidence_distribution": {"high": 0, "medium": 0, "low": 0},
                     "configuration_used": "error"
                 },
+                "plates_by_confidence": {"high": 0, "medium": 0, "low": 0},
+                "spatial_distribution": {},
                 "processing_time": round(processing_time, 3),
                 "timestamp": time.time(),
                 "result_urls": None
             }
 
     def _build_model_kwargs(self, request_params: Dict[str, Any]) -> Dict[str, Any]:
-        """✅ NUEVO: Construye parámetros del modelo usando configuración centralizada"""
+        """ACTUALIZADO: Construye parámetros del modelo para detección múltiple"""
 
-        # Usar configuración centralizada como base con fallbacks a request_params
+        # OBTENER max_detections más alto
+        max_detections = request_params.get('max_detections', self.image_config['max_detections'])
+
         model_kwargs = {
             'conf': request_params.get('confidence_threshold', self.image_config['confidence_threshold']),
             'iou': request_params.get('iou_threshold', self.image_config['iou_threshold']),
+            'max_det': max_detections,  # ✅ CRÍTICO: Pasar al modelo
             'verbose': False
         }
+
+        # LOG para debugging múltiples detecciones
+        logger.info(f"🎯 Detección múltiple habilitada: max_det={max_detections}, "
+                    f"conf={model_kwargs['conf']}, iou={model_kwargs['iou']}")
 
         logger.debug(f"🔧 Config base: {self.image_config}")
         logger.debug(f"📝 Request params: {request_params}")
         logger.debug(f"⚙️ Kwargs finales: {model_kwargs}")
 
         return model_kwargs
+
+    def _get_plate_region(self, bbox: List[float]) -> str:
+        """Obtiene región espacial de una placa"""
+        try:
+            x1, y1, x2, y2 = bbox
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+
+            # Dividir imagen en regiones de 400x300px aproximadamente
+            region_x = int(center_x // 400)
+            region_y = int(center_y // 300)
+
+            return f"R{region_x}_{region_y}"
+        except Exception:
+            return "R0_0"
 
     def _generate_result_message(self, pipeline_result: Dict[str, Any], processed_plates: List[Dict]) -> str:
         """Genera mensaje descriptivo del resultado"""

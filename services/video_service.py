@@ -51,6 +51,36 @@ class PlateTracker:
             self.best_confidence = confidence
             self.best_frame = frame_num
 
+    def _get_bbox_region(self, bbox: List[float], image_width: int = 1920, image_height: int = 1080) -> str:
+        """Identifica región espacial para evitar fusión de placas diferentes"""
+        try:
+            x1, y1, x2, y2 = bbox
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+
+            # Dividir imagen en cuadrícula 4x4
+            region_x = int(center_x // (image_width / 4))
+            region_y = int(center_y // (image_height / 4))
+
+            return f"R{region_x}_{region_y}"
+        except Exception:
+            return "R0_0"
+
+    def _calculate_average_bbox(self, bbox_history: List[List[float]]) -> List[float]:
+        """Calcula bbox promedio"""
+        if not bbox_history:
+            return [0, 0, 0, 0]
+
+        avg_bbox = [0.0, 0.0, 0.0, 0.0]
+        for bbox in bbox_history:
+            for i in range(4):
+                avg_bbox[i] += bbox[i]
+
+        for i in range(4):
+            avg_bbox[i] /= len(bbox_history)
+
+        return avg_bbox
+
     def is_similar_position(self, new_bbox: List[float], threshold: float = None) -> bool:
         """Verifica si una nueva detección está en posición similar usando config centralizada"""
         if threshold is None:
@@ -474,17 +504,17 @@ class VideoService:
                 "config_source": "centralized_settings"
             }
 
-    def _update_trackers_enhanced(
-            self,
-            trackers: Dict[str, PlateTracker],
-            detections: List[Dict[str, Any]],
-            frame_num: int,
-            final_params: Dict[str, Any]  # ✅ RECIBIR CONFIG
-    ):
-        """✅ ACTUALIZADO: Actualiza trackers usando configuración centralizada"""
+    def _update_trackers_enhanced(self, trackers: Dict[str, PlateTracker],
+                                  detections: List[Dict[str, Any]], frame_num: int,
+                                  final_params: Dict[str, Any]):
+        """Tracking espacial para múltiples placas"""
 
-        # ✅ USAR UMBRAL DE SIMILITUD CENTRALIZADO
-        similarity_threshold = final_params.get('similarity_threshold', self.tracking_config['similarity_threshold'])
+        #  UMBRALES MENOS AGRESIVOS
+        similarity_threshold = final_params.get('similarity_threshold', 0.6)  # Era: 0.8
+        spatial_threshold = final_params.get('tracking_iou_threshold', 0.15)  # Era: 0.2
+
+        logger.debug(f"🔄 Procesando {len(detections)} detecciones en frame {frame_num} "
+                     f"(sim_thresh={similarity_threshold}, spatial_thresh={spatial_threshold})")
 
         for detection in detections:
             formatted_text = detection["plate_text"]
@@ -494,27 +524,40 @@ class VideoService:
             is_six_char = detection.get("six_char_validated", False)
             auto_formatted = detection.get("auto_formatted", False)
 
-            tracking_key = formatted_text if formatted_text else raw_text
+            # CREAR clave única basada en posición espacial
+            bbox_region = self._get_bbox_region(bbox)
+            tracking_key = f"{formatted_text}_{bbox_region}" if formatted_text else f"{raw_text}_{bbox_region}"
 
-            # Buscar tracker existente
+            # Buscar tracker existente por proximidad espacial primero
             existing_tracker = None
 
+            # 1. Buscar por clave exacta
             if tracking_key in trackers:
                 existing_tracker = trackers[tracking_key]
+                logger.debug(f"🔗 Tracker exacto encontrado: {tracking_key}")
             else:
-                # ✅ USAR UMBRAL DE SIMILITUD CENTRALIZADO
-                for tracked_text, tracker in trackers.items():
-                    if (self._are_plates_similar(tracking_key, tracked_text, similarity_threshold) and
-                            tracker.is_similar_position(bbox)):
+                # 2. Buscar por proximidad espacial + similitud de texto
+                for tracked_key, tracker in trackers.items():
+                    text_similar = self._are_plates_similar(
+                        formatted_text or raw_text,
+                        tracker.plate_text,
+                        similarity_threshold
+                    )
+                    spatial_similar = tracker.is_similar_position(bbox, spatial_threshold)
+
+                    if text_similar and spatial_similar:
                         existing_tracker = tracker
+                        logger.debug(f"🔗 Fusionando con tracker similar: {tracked_key} "
+                                     f"(text_sim={text_similar}, spatial_sim={spatial_similar})")
                         break
 
             if existing_tracker:
                 existing_tracker.update(confidence, frame_num, bbox, is_six_char, auto_formatted)
-                logger.debug(f"✅ Placa actualizada: '{raw_text}' -> '{formatted_text}' "
-                             f"(Frame: {frame_num}, 6chars: {is_six_char}, auto: {auto_formatted})")
+                logger.debug(f"✅ Tracker actualizado: {existing_tracker.plate_text} "
+                             f"(detecciones: {existing_tracker.detection_count})")
             else:
-                trackers[tracking_key] = PlateTracker(
+                # CREAR NUEVO TRACKER (menos restrictivo)
+                new_tracker = PlateTracker(
                     plate_text=formatted_text,
                     raw_plate_text=raw_text,
                     best_confidence=confidence,
@@ -525,19 +568,41 @@ class VideoService:
                     is_six_char_valid=is_six_char,
                     auto_formatted=auto_formatted
                 )
-                trackers[tracking_key].update(confidence, frame_num, bbox, is_six_char, auto_formatted)
-                logger.debug(f"🆕 Nueva placa: '{raw_text}' -> '{formatted_text}' "
-                             f"(Frame: {frame_num}, 6chars: {is_six_char}, auto: {auto_formatted})")
+                new_tracker.update(confidence, frame_num, bbox, is_six_char, auto_formatted)
+                trackers[tracking_key] = new_tracker
+
+                logger.debug(f"🆕 Nuevo tracker creado: '{raw_text}' -> '{formatted_text}' "
+                             f"en región {bbox_region}")
 
     def _extract_unique_plates_enhanced(self, trackers: Dict[str, PlateTracker]) -> List[Dict[str, Any]]:
-        """✅ ACTUALIZADO: Extrae placas únicas usando configuración centralizada"""
-        unique_plates = []
+        """Extraer TODAS las placas válidas por región espacial"""
 
-        # ✅ USAR MIN_DETECTION_FRAMES CENTRALIZADO
-        min_frames = self.tracking_config['min_detection_frames']
+        unique_plates = []
+        min_frames = self.tracking_config['min_detection_frames']  # Ahora: 2
+
+        logger.info(f"📊 Extrayendo placas únicas: {len(trackers)} trackers, min_frames={min_frames}")
+
+        # AGRUPAR por regiones espaciales para evitar duplicados
+        spatial_groups = defaultdict(list)
 
         for plate_text, tracker in trackers.items():
             if tracker.detection_count >= min_frames:
+                # Extraer región espacial de la clave
+                parts = plate_text.split('_')
+                spatial_region = parts[-1] if len(parts) > 1 and parts[-1].startswith('R') else "R0_0"
+                spatial_groups[spatial_region].append(tracker)
+
+        logger.debug(f"🗂️ Agrupación espacial: {len(spatial_groups)} regiones")
+
+        # PROCESAR CADA REGIÓN ESPACIAL
+        for spatial_region, region_trackers in spatial_groups.items():
+            # Ordenar por confianza en esta región
+            region_trackers.sort(key=lambda t: t.best_confidence, reverse=True)
+
+            logger.debug(f"📍 Región {spatial_region}: {len(region_trackers)} trackers")
+
+            # PROCESAR TODAS las placas válidas de esta región
+            for i, tracker in enumerate(region_trackers):
                 avg_confidence = sum(tracker.confidences) / len(tracker.confidences) if tracker.confidences else 0.0
                 stability_score = 1.0 - (np.std(tracker.confidences) / np.mean(tracker.confidences)) if len(
                     tracker.confidences) > 1 and np.mean(tracker.confidences) > 0 else 0.5
@@ -557,11 +622,15 @@ class VideoService:
                     "stability_score": round(stability_score, 3),
                     "duration_frames": tracker.last_seen - tracker.first_seen + 1,
                     "char_count": len(tracker.raw_plate_text) if tracker.raw_plate_text else 0,
-                    "processing_method": "roi_enhanced_6chars_centralized",  # ✅ ACTUALIZADO
-                    "config_info": {  # ✅ NUEVO
+                    "spatial_region": spatial_region,  # NUEVO
+                    "avg_bbox": self._calculate_average_bbox(tracker.bbox_history),  # NUEVO
+                    "region_rank": i + 1,  #   en esta región
+                    "processing_method": "spatial_tracking_multiple_plates",
+                    "config_info": {
                         "min_frames_required": min_frames,
                         "frames_detected": tracker.detection_count,
-                        "meets_requirements": tracker.detection_count >= min_frames
+                        "meets_requirements": tracker.detection_count >= min_frames,
+                        "spatial_region": spatial_region
                     }
                 }
                 unique_plates.append(plate_result)
@@ -571,12 +640,16 @@ class VideoService:
 
                 logger.info(f"📋 Placa confirmada: '{tracker.raw_plate_text}' -> '{tracker.plate_text}' "
                             f"{status_indicator}{auto_indicator} "
-                            f"(Detecciones: {tracker.detection_count}/{min_frames}, "
+                            f"(Región: {spatial_region}, Detecciones: {tracker.detection_count}/{min_frames}, "
                             f"Confianza: {tracker.best_confidence:.3f})")
 
-        # Ordenar por: 1) Validez de 6 chars, 2) Confianza
+        # ORDENAR POR PRIORIDAD: 1) 6 chars válidas, 2) Confianza
         unique_plates.sort(key=lambda x: (x["is_six_char_valid"], x["best_confidence"]), reverse=True)
-        return unique_plates
+
+        logger.success(f"📊 Extracción completada: {len(unique_plates)} placas únicas "
+                       f"en {len(spatial_groups)} regiones espaciales")
+
+        return unique_plates  # RETORNAR TODAS, sin límite artificial
 
     def _get_video_info(self, video_path: str) -> Optional[Dict[str, Any]]:
         """✅ ACTUALIZADO: Obtiene información del video usando config centralizada"""
@@ -656,12 +729,9 @@ class VideoService:
         """Obtiene validez de placa según el tipo de resultado"""
         return plate.get("is_valid_format", False)
 
-    def _generate_video_result_message(
-            self,
-            unique_plates: List[Dict[str, Any]],
-            tracking_result: Dict[str, Any]
-    ) -> str:
-        """✅ ACTUALIZADO: Genera mensaje con información de configuración"""
+    def _generate_video_result_message(self, unique_plates: List[Dict[str, Any]],
+                                       tracking_result: Dict[str, Any]) -> str:
+        """Genera mensaje con información de múltiples placas"""
         if not unique_plates:
             return f"No se detectaron placas válidas en el video (config centralizada). " \
                    f"Frames procesados: {tracking_result['frames_processed']}, " \
@@ -670,9 +740,10 @@ class VideoService:
         valid_plates = [p for p in unique_plates if p['is_valid_format']]
         six_char_plates = [p for p in unique_plates if p.get('is_six_char_valid', False)]
         auto_formatted_plates = [p for p in unique_plates if p.get('auto_formatted', False)]
+        spatial_regions = len(set(p.get('spatial_region', 'R0_0') for p in unique_plates))
         best_plate = unique_plates[0]
 
-        message = f"Se detectaron {len(unique_plates)} placa(s) única(s) con config centralizada. "
+        message = f"Se detectaron {len(unique_plates)} placa(s) única(s) en {spatial_regions} regiones espaciales. "
 
         if six_char_plates:
             message += f"{len(six_char_plates)} con 6 caracteres válidos. "
@@ -688,7 +759,8 @@ class VideoService:
         else:
             message += f"Mejor: '{formatted_text}' "
 
-        message += f"(Confianza: {best_plate['best_confidence']:.3f}, " \
+        message += f"(Región: {best_plate.get('spatial_region', 'R0_0')}, " \
+                   f"Confianza: {best_plate['best_confidence']:.3f}, " \
                    f"Detecciones: {best_plate['detection_count']}"
 
         if best_plate.get('is_six_char_valid'):

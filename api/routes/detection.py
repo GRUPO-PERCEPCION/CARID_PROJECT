@@ -115,6 +115,20 @@ async def detect_plates_in_image(
                 "max_detections": request_params['max_detections'],
                 "roi_enabled": settings.roi_enabled,
                 "force_six_characters": settings.force_six_characters
+            },
+            # NUEVOS CAMPOS PARA MÚLTIPLES DETECCIONES
+            "detection_summary": {
+                "total_plates_found": result.get("plates_processed", 0),
+                "valid_plates_count": len(
+                    [p for p in result.get("final_results", []) if p.get("is_valid_plate", False)]),
+                "spatial_regions_covered": len(result.get("spatial_distribution", {})),
+                "confidence_breakdown": result.get("plates_by_confidence", {}),
+                "processing_method": "enhanced_multiple_detection"
+            },
+            "all_detected_plates": result.get("all_detected_plates", []),  # LISTA COMPLETA
+            "spatial_analysis": {
+                "regions_found": result.get("spatial_distribution", {}),
+                "region_count": len(result.get("spatial_distribution", {}))
             }
         }
 

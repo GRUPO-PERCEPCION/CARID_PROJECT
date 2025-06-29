@@ -167,14 +167,33 @@ async def detect_plates_in_video(
             "message": "Procesamiento de video completado exitosamente con configuración centralizada",
             "data": result,
             "timestamp": result.get("timestamp"),
-            "configuration_applied": {  # ✅ INFORMACIÓN DE CONFIG APLICADA
+            "configuration_applied": {  # INFORMACIÓN DE CONFIG APLICADA
                 "source": "centralized_settings",
                 "video_config": video_config,
                 "final_params": request_params,
                 "roi_enabled": settings.roi_enabled,
                 "force_six_characters": settings.force_six_characters,
                 "tracking_config": settings.get_tracking_config()
-            }
+            },
+            # NUEVOS CAMPOS PARA MÚLTIPLES PLACAS EN VIDEO
+            "video_analysis": {
+                "total_unique_plates": len(result.get("unique_plates", [])),
+                "spatial_regions_detected": len(
+                    set(p.get("spatial_region", "R0_0") for p in result.get("unique_plates", []))),
+                "plates_by_confidence": {
+                    "high": [p for p in result.get("unique_plates", []) if p.get("best_confidence", 0) > 0.7],
+                    "medium": [p for p in result.get("unique_plates", []) if 0.4 <= p.get("best_confidence", 0) <= 0.7],
+                    "low": [p for p in result.get("unique_plates", []) if p.get("best_confidence", 0) < 0.4]
+                },
+                "plates_by_region": {},  # Se llenará con datos de regiones
+                "tracking_effectiveness": {
+                    "frames_processed": result.get("processing_summary", {}).get("frames_processed", 0),
+                    "frames_with_detections": result.get("processing_summary", {}).get("frames_with_detections", 0),
+                    "detection_rate": round(result.get("processing_summary", {}).get("frames_with_detections", 0) / max(
+                        result.get("processing_summary", {}).get("frames_processed", 1), 1) * 100, 1)
+                }
+            },
+            "all_unique_plates": result.get("unique_plates", [])
         }
 
         # Log del resultado
