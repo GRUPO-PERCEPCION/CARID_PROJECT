@@ -3,7 +3,7 @@
 Versión completamente reescrita para máxima eficiencia
 """
 
-from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi import FastAPI, WebSocket, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
@@ -117,11 +117,48 @@ app = FastAPI(
 # 🌐 CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Permitir todos los orígenes temporalmente
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
+    expose_headers=["*"]
 )
+
+
+@app.middleware("http")
+async def enhanced_ngrok_middleware(request: Request, call_next):
+    """Middleware mejorado para manejar ngrok y CORS"""
+
+    # Log de request para debugging
+    logger.info(f"🌐 Request: {request.method} {request.url}")
+    logger.info(f"📡 Headers: {dict(request.headers)}")
+
+    # Procesar request
+    response = await call_next(request)
+
+    # Headers específicos para ngrok
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, ngrok-skip-browser-warning"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["ngrok-skip-browser-warning"] = "true"
+
+    # Headers adicionales para evitar 403
+    response.headers["Access-Control-Max-Age"] = "86400"
+    response.headers["Vary"] = "Origin"
+
+    logger.info(f"✅ Response: {response.status_code}")
+
+    return response
+
+@app.options("/{full_path:path}")
+async def options_handler(request: Request):
+    """Manejar requests OPTIONS para CORS preflight"""
+    return {
+        "message": "OK",
+        "method": "OPTIONS",
+        "path": request.url.path
+    }
 
 # 📁 Archivos estáticos
 try:
@@ -191,6 +228,15 @@ async def root():
         "timestamp": time.time()
     }
 
+@app.get("/api/v1/test-ngrok", tags=["Testing"])
+async def test_ngrok():
+    """Endpoint simple para probar ngrok"""
+    return {
+        "success": True,
+        "message": "✅ Ngrok funcionando correctamente",
+        "timestamp": time.time(),
+        "service": "CARID ALPR"
+    }
 
 # 🧪 WEBSOCKET DE PRUEBA ULTRA-SIMPLE
 @app.websocket("/simple-test")
