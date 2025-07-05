@@ -79,7 +79,7 @@ class PlateValidator:
 
     def _add_dash_to_plate(self, clean_text: str) -> str:
         """
-        ✅ CORREGIDO: Agrega guión automáticamente según patrones peruanos extendidos
+        ✅ NUEVO: Agrega guión automáticamente según patrones peruanos
         """
         if len(clean_text) != 6:
             return clean_text
@@ -92,19 +92,10 @@ class PlateValidator:
         elif clean_text[:2].isalpha() and clean_text[2:].isdigit():
             return f"{clean_text[:2]}-{clean_text[2:]}"
 
-        # ✅ NUEVO: T2C764 -> T2C-764 (letra-número-letra + 3números)
-        elif re.match(r'^[A-Z]\d[A-Z]\d{3}$', clean_text):
-            return f"{clean_text[:3]}-{clean_text[3:]}"
-
-        # ✅ NUEVO: A12B34 -> A12-B34 (letra-2números + letra-2números)
-        elif re.match(r'^[A-Z]\d{2}[A-Z]\d{2}$', clean_text):
-            return f"{clean_text[:3]}-{clean_text[3:]}"
-
-        # ✅ FALLBACK: Para cualquier patrón no reconocido, usar formato estándar
+        # Si no coincide con patrones conocidos, devolver sin guión
         else:
-            logger.warning(f"⚠️ Patrón no estándar, aplicando formato por defecto: {clean_text}")
-            # Formato por defecto: primeros 3 + guión + últimos 3
-            return f"{clean_text[:3]}-{clean_text[3:]}"
+            logger.warning(f"⚠️ Patrón no reconocido para agregar guión: {clean_text}")
+            return clean_text
 
     def filter_detections_by_six_chars(self, detections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

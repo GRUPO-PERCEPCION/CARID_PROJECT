@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # Configuración de modelos
     plate_model_path: str = Field(default="./models_trained/plate_detection.pt", env="PLATE_MODEL_PATH")
     char_model_path: str = Field(default="./models_trained/char_recognition.pt", env="CHAR_MODEL_PATH")
-    model_confidence_threshold: float = Field(default=0.4, env="MODEL_CONFIDENCE_THRESHOLD")
+    model_confidence_threshold: float = Field(default=0.7, env="MODEL_CONFIDENCE_THRESHOLD")
     model_iou_threshold: float = Field(default=0.5, env="MODEL_IOU_THRESHOLD")
 
     # Configuración CUDA/GPU
@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     image_save_results: bool = Field(default=True, env="IMAGE_SAVE_RESULTS")
 
     # ✅ CONFIGURACIÓN DE DETECCIÓN RÁPIDA
-    quick_confidence_threshold: float = Field(default=0.3, env="QUICK_CONFIDENCE_THRESHOLD")
+    quick_confidence_threshold: float = Field(default=0.5, env="QUICK_CONFIDENCE_THRESHOLD")
     quick_iou_threshold: float = Field(default=0.5, env="QUICK_IOU_THRESHOLD")
     quick_max_detections: int = Field(default=5, env="QUICK_MAX_DETECTIONS")
     quick_enhance_image: bool = Field(default=False, env="QUICK_ENHANCE_IMAGE")
@@ -63,30 +63,30 @@ class Settings(BaseSettings):
     quick_max_duration: int = Field(default=60, env="QUICK_MAX_DURATION")
 
     # ✅ CONFIGURACIÓN DE VIDEOS
-    video_confidence_threshold: float = Field(default=0.3, env="VIDEO_CONFIDENCE_THRESHOLD")
+    video_confidence_threshold: float = Field(default=0.5, env="VIDEO_CONFIDENCE_THRESHOLD")
     video_iou_threshold: float = Field(default=0.5, env="VIDEO_IOU_THRESHOLD")
     video_frame_skip: int = Field(default=3, env="VIDEO_FRAME_SKIP")
     video_max_duration: int = Field(default=600, env="VIDEO_MAX_DURATION")  # 10 minutos
-    video_min_detection_frames: int = Field(default=2, env="VIDEO_MIN_DETECTION_FRAMES")
+    video_min_detection_frames: int = Field(default=3, env="VIDEO_MIN_DETECTION_FRAMES")
     video_save_results: bool = Field(default=True, env="VIDEO_SAVE_RESULTS")
     video_save_best_frames: bool = Field(default=True, env="VIDEO_SAVE_BEST_FRAMES")
     video_create_annotated_video: bool = Field(default=False, env="VIDEO_CREATE_ANNOTATED_VIDEO")
     video_processing_timeout: int = Field(default=1200, env="VIDEO_PROCESSING_TIMEOUT")  # 20 minutos
 
     # ✅ CONFIGURACIÓN DE TRACKING
-    video_similarity_threshold: float = Field(default=0.6, env="VIDEO_SIMILARITY_THRESHOLD")
+    video_similarity_threshold: float = Field(default=0.8, env="VIDEO_SIMILARITY_THRESHOLD")
     video_max_tracking_distance: int = Field(default=8, env="VIDEO_MAX_TRACKING_DISTANCE")
     tracking_iou_threshold: float = Field(default=0.2, env="TRACKING_IOU_THRESHOLD")
     stability_frames_required: int = Field(default=5, env="STABILITY_FRAMES_REQUIRED")
 
     # ✅ CONFIGURACIÓN DE DETECTOR DE PLACAS
-    plate_min_area: int = Field(default=300, env="PLATE_MIN_AREA")
+    plate_min_area: int = Field(default=500, env="PLATE_MIN_AREA")
     plate_max_detections: int = Field(default=10, env="PLATE_MAX_DETECTIONS")
-    plate_min_aspect_ratio: float = Field(default=1.2, env="PLATE_MIN_ASPECT_RATIO")
+    plate_min_aspect_ratio: float = Field(default=1.5, env="PLATE_MIN_ASPECT_RATIO")
     plate_max_aspect_ratio: float = Field(default=6.0, env="PLATE_MAX_ASPECT_RATIO")
 
     # ✅ CONFIGURACIÓN DE RECONOCEDOR DE CARACTERES
-    char_min_confidence: float = Field(default=0.25, env="CHAR_MIN_CONFIDENCE")
+    char_min_confidence: float = Field(default=0.3, env="CHAR_MIN_CONFIDENCE")
     char_expected_count: int = Field(default=6, env="CHAR_EXPECTED_COUNT")
     char_max_characters: int = Field(default=10, env="CHAR_MAX_CHARACTERS")
     char_force_six_characters: bool = Field(default=True, env="CHAR_FORCE_SIX_CHARACTERS")
@@ -94,7 +94,7 @@ class Settings(BaseSettings):
 
     # ✅ CONFIGURACIÓN DE ROI
     roi_enabled: bool = Field(default=True, env="ROI_ENABLED")
-    roi_percentage: float = Field(default=90.0, env="ROI_PERCENTAGE")
+    roi_percentage: float = Field(default=60.0, env="ROI_PERCENTAGE")  # 60% del centro de la imagen
 
     # ✅ CONFIGURACIÓN DE VALIDACIÓN (RANGOS)
     min_confidence_range: float = Field(default=0.1, env="MIN_CONFIDENCE_RANGE")
@@ -132,15 +132,6 @@ class Settings(BaseSettings):
     streaming_compression_enabled: bool = Field(default=True, env="STREAMING_COMPRESSION_ENABLED")
     streaming_adaptive_quality: bool = Field(default=True, env="STREAMING_ADAPTIVE_QUALITY")
     streaming_throttle_enabled: bool = Field(default=True, env="STREAMING_THROTTLE_ENABLED")
-
-    # Configuración específica para pipeline mejorado
-    pipeline_use_roi: bool = Field(default=True, env="PIPELINE_USE_ROI")
-    pipeline_filter_six_chars: bool = Field(default=False,env="PIPELINE_FILTER_SIX_CHARS")  # ✅ False para ser más permisivo
-    pipeline_min_char_count: int = Field(default=3, env="PIPELINE_MIN_CHAR_COUNT")  # ✅ Aceptar 3+ caracteres
-
-    # Configuración de debugging
-    enable_debug_logs: bool = Field(default=True, env="ENABLE_DEBUG_LOGS")
-    save_intermediate_results: bool = Field(default=False, env="SAVE_INTERMEDIATE_RESULTS")
 
     # ✅ CONFIGURACIÓN DE CONFIANZA COMBINADA
     plate_confidence_weight: float = Field(default=0.4, env="PLATE_CONFIDENCE_WEIGHT")
@@ -222,13 +213,13 @@ class Settings(BaseSettings):
         }
 
     def get_char_recognizer_config(self) -> Dict[str, Any]:
-        """Configuración para el reconocedor de caracteres - OPTIMIZADA"""
+        """Configuración para el reconocedor de caracteres"""
         return {
-            "min_char_confidence": 0.25,  # ✅ MÁS PERMISIVO
+            "min_char_confidence": self.char_min_confidence,
             "expected_char_count": self.char_expected_count,
             "max_characters": self.char_max_characters,
-            "force_six_characters": True,  # ✅ Para formateo automático
-            "strict_validation": False  # ✅ MÁS PERMISIVO
+            "force_six_characters": self.char_force_six_characters,
+            "strict_validation": self.char_strict_validation
         }
 
     def get_roi_config(self) -> Dict[str, Any]:
@@ -259,7 +250,7 @@ class Settings(BaseSettings):
         }
 
     def get_streaming_config(self) -> Dict[str, Any]:
-        """Configuración para streaming en tiempo real - OPTIMIZADA"""
+        """Configuración para streaming en tiempo real"""
         return {
             "enabled": self.streaming_enabled,
             "websocket": {
@@ -277,32 +268,12 @@ class Settings(BaseSettings):
                 "throttle_enabled": self.streaming_throttle_enabled
             },
             "detection": {
-                "confidence_threshold": 0.15,  # ✅ MÁS PERMISIVO para streaming
-                "iou_threshold": 0.25,  # ✅ MENOS AGRESIVO en NMS
+                "confidence_threshold": max(0.25, self.model_confidence_threshold - 0.15),
+                "iou_threshold": self.model_iou_threshold,
                 "frame_skip": max(1, self.video_frame_skip - 1),
-                "min_detection_frames": 1,  # ✅ MÁS PERMISIVO
-                "max_detections": 30  # ✅ MÁS DETECCIONES
-            },
-            "pipeline": {
-                "use_roi": getattr(self, 'pipeline_use_roi', True),
-                "filter_six_chars": getattr(self, 'pipeline_filter_six_chars', False),  # ✅ False
-                "min_char_count": getattr(self, 'pipeline_min_char_count', 3)
+                "min_detection_frames": max(1, self.video_min_detection_frames - 1),
+                "max_detections": self.streaming_max_detections  # NUEVA LÍNEA
             }
-        }
-
-    # ===== NUEVO MÉTODO PARA CONFIGURACIÓN DE PIPELINE =====
-
-    def get_pipeline_config(self) -> Dict[str, Any]:
-        """✅ NUEVO: Configuración específica para enhanced_pipeline"""
-        return {
-            "use_roi": getattr(self, 'pipeline_use_roi', True),
-            "filter_six_chars": getattr(self, 'pipeline_filter_six_chars', False),  # ✅ Más permisivo
-            "min_char_count": getattr(self, 'pipeline_min_char_count', 3),
-            "confidence_threshold": 0.15,  # ✅ Muy permisivo
-            "iou_threshold": 0.25,
-            "max_detections": 30,
-            "roi_percentage": self.roi_percentage,
-            "debug_enabled": getattr(self, 'enable_debug_logs', True)
         }
 
     # ✅ PROPIEDADES ADICIONALES

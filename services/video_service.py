@@ -51,6 +51,21 @@ class PlateTracker:
             self.best_confidence = confidence
             self.best_frame = frame_num
 
+    def _get_bbox_region(self, bbox: List[float], image_width: int = 1920, image_height: int = 1080) -> str:
+        """Identifica región espacial para evitar fusión de placas diferentes"""
+        try:
+            x1, y1, x2, y2 = bbox
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+
+            # Dividir imagen en cuadrícula 4x4
+            region_x = int(center_x // (image_width / 4))
+            region_y = int(center_y // (image_height / 4))
+
+            return f"R{region_x}_{region_y}"
+        except Exception:
+            return "R0_0"
+
     def _calculate_average_bbox(self, bbox_history: List[List[float]]) -> List[float]:
         """Calcula bbox promedio"""
         if not bbox_history:
@@ -80,27 +95,23 @@ class PlateTracker:
 
     def _calculate_iou(self, bbox1: List[float], bbox2: List[float]) -> float:
         """Calcula Intersection over Union entre dos bboxes"""
-        try:
-            x1_min, y1_min, x1_max, y1_max = bbox1
-            x2_min, y2_min, x2_max, y2_max = bbox2
+        x1_min, y1_min, x1_max, y1_max = bbox1
+        x2_min, y2_min, x2_max, y2_max = bbox2
 
-            x_min = max(x1_min, x2_min)
-            y_min = max(y1_min, y2_min)
-            x_max = min(x1_max, x2_max)
-            y_max = min(y1_max, y2_max)
+        x_min = max(x1_min, x2_min)
+        y_min = max(y1_min, y2_min)
+        x_max = min(x1_max, x2_max)
+        y_max = min(y1_max, y2_max)
 
-            if x_max <= x_min or y_max <= y_min:
-                return 0.0
-
-            intersection = (x_max - x_min) * (y_max - y_min)
-            area1 = (x1_max - x1_min) * (y1_max - y1_min)
-            area2 = (x2_max - x2_min) * (y2_max - y2_min)
-            union = area1 + area2 - intersection
-
-            return intersection / union if union > 0 else 0.0
-        except Exception as e:
-            logger.error(f"Error calculando IoU: {str(e)}")
+        if x_max <= x_min or y_max <= y_min:
             return 0.0
+
+        intersection = (x_max - x_min) * (y_max - y_min)
+        area1 = (x1_max - x1_min) * (y1_max - y1_min)
+        area2 = (x2_max - x2_min) * (y2_max - y2_min)
+        union = area1 + area2 - intersection
+
+        return intersection / union if union > 0 else 0.0
 
 
 class VideoService:
@@ -439,7 +450,7 @@ class VideoService:
             result = self.enhanced_pipeline.process_with_enhancements(
                 frame,
                 use_roi=settings.roi_enabled,
-                filter_six_chars=False,
+                filter_six_chars=settings.force_six_characters,
                 return_stats=False,
                 conf=confidence_threshold,
                 iou=iou_threshold
@@ -514,7 +525,7 @@ class VideoService:
             auto_formatted = detection.get("auto_formatted", False)
 
             # CREAR clave única basada en posición espacial
-            bbox_region = self._get_bbox_region(bbox, 1920, 1080)
+            bbox_region = self._get_bbox_region(bbox)
             tracking_key = f"{formatted_text}_{bbox_region}" if formatted_text else f"{raw_text}_{bbox_region}"
 
             # Buscar tracker existente por proximidad espacial primero
@@ -909,39 +920,6 @@ class VideoService:
         }
 
         return video_type_configs.get(video_type, base_config)
-
-    def _get_bbox_region(self, bbox: List[float], image_width: int = 1920, image_height: int = 1080) -> str:
-        """Identifica región espacial para evitar fusión de placas diferentes"""
-        try:
-            x1, y1, x2, y2 = bbox
-            center_x = (x1 + x2) / 2
-            center_y = (y1 + y2) / 2
-
-            # Dividir imagen en cuadrícula 4x4
-            region_x = int(center_x // (image_width / 4))
-            region_y = int(center_y // (image_height / 4))
-
-            return f"R{region_x}_{region_y}"
-        except Exception:
-            return "R0_0"
-
-    def _calculate_average_bbox(self, bbox_history: List[List[float]]) -> List[float]:
-        """Calcula bbox promedio de un tracker"""
-        if not bbox_history:
-            return [0, 0, 0, 0]
-
-        avg_bbox = [0.0, 0.0, 0.0, 0.0]
-        for bbox in bbox_history:
-            if len(bbox) == 4:  # Verificar que el bbox es válido
-                for i in range(4):
-                    avg_bbox[i] += bbox[i]
-
-        count = len(bbox_history)
-        if count > 0:
-            for i in range(4):
-                avg_bbox[i] /= count
-
-        return avg_bbox
 
 
 # Instancia global del servicio
